@@ -37,20 +37,7 @@ pub fn write(tl: &Timeline) -> String {
     for (i, p) in tl.selects.iter().enumerate() {
         let s = &tl.sources[p.source];
         let m = p.select.as_ref().unwrap();
-        let (src_in, src_out) = if s.same_rate_as(r) {
-            let a = s.tc_frames + p.source_in_native;
-            let b = a + p.duration;
-            (
-                frames_to_timecode(a, r, s.tc_drop),
-                frames_to_timecode(b, r, s.tc_drop),
-            )
-        } else {
-            // Clip start timecode in seconds, then the select offset, both at the timeline rate.
-            let tc_secs = s.native_rate().frames_to_seconds(s.tc_frames);
-            let a = r.seconds_to_frames(tc_secs) + p.source_in;
-            let b = a + p.duration;
-            (frames_to_timecode(a, r, drop), frames_to_timecode(b, r, drop))
-        };
+        let (src_in, src_out) = super::source_timecodes_at_timeline_rate(tl, p);
         let rec_in = frames_to_timecode(tl.start_frame + p.record_in, r, drop);
         let rec_out = frames_to_timecode(tl.start_frame + p.record_out(), r, drop);
         out.push_str(&format!(

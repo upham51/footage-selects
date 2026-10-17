@@ -18,12 +18,12 @@ A first pass over about two hours of footage takes a few minutes. You then tune 
 
 ## Download
 
-Go to the [latest release](https://github.com/upham51/footage-selects/releases/latest) and download the file for your computer:
+No version has been published yet, so there is nothing to download today. Until the first release is out, the app can only be built from source, as described in [DEVELOPMENT.md](DEVELOPMENT.md).
+
+Once a version is published, go to the [releases page](https://github.com/upham51/footage-selects/releases) and download the file for your computer:
 
 1. Mac with Apple silicon (M1, M2, M3, M4 or later): the file ending in `mac-apple-silicon.dmg`
 2. Windows: the file ending in `windows-setup.exe`
-
-While this project's GitHub page is private, the download links only work when you are signed in to GitHub with access to it.
 
 Not sure which Mac you have? Open the Apple menu, choose About This Mac, and look at the line called Chip. If it starts with Apple, this download is for you.
 
@@ -117,6 +117,8 @@ Click Export timeline, choose where to save and a name, and four files are writt
 3. `.edl`, an edit list for other editing systems
 4. `.csv`, a spreadsheet of every select that opens in Excel, Numbers or Google Sheets
 
+The spreadsheet gives each select's source timecode twice. The timeline rate columns match the `.edl`. The clip rate columns match what your editor shows for the clip itself, so a 120 fps clip can show frame numbers up to 119 there. Both point to the same moment.
+
 ## Import into DaVinci Resolve
 
 1. Open your project in Resolve.
@@ -181,7 +183,9 @@ What visitors see: what the app does, a place for a demo video, who it is for, h
 
 What is stored for each signup: email, editor, what they shoot, roughly how many hours they shoot a month, and the time they joined. No IP address or tracking information is kept. Signing up twice with the same email keeps one entry.
 
-Spam protection: a hidden field that only bots fill in, a check that the form was not filled in faster than a person can, a limit of 5 signups a minute from one connection, and optionally Cloudflare Turnstile (a quiet "are you human" check).
+Spam protection: a hidden field that only bots fill in, a check that the form was not filled in faster than a person can, a limit of 5 signups a minute from one connection, and Cloudflare Turnstile, an "are you human" check. Turnstile is on: a small box appears above the button and normally passes by itself without a click. It needs JavaScript, so a visitor with JavaScript turned off is told so above the form and cannot sign up. Turning Turnstile off (removing the key from `site/config.json`) lets those visitors sign up again, with the other three protections still in place.
+
+The page is served with `Cache-Control: no-cache`, so browsers check for a new version on every visit and a change reaches visitors as soon as it is deployed.
 
 To see the count and download the list, open the page's address followed by `/admin.html` and enter your admin password. It shows the total, signups in the last 7 days, a breakdown by editor, footage type and hours, and a button that downloads every signup as a spreadsheet.
 

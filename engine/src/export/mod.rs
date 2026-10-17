@@ -288,6 +288,26 @@ pub fn build_timeline(project: &Project, selections: &[ClipSelection]) -> (Timel
 }
 
 /// A file:// URL for a local path, percent-encoded. Windows drive paths become file:///C:/...
+/// A select's source in and out as timecode at the timeline rate, the way the EDL
+/// gives them. A clip at another rate has its start timecode and the select's
+/// offset both converted to the timeline rate.
+pub fn source_timecodes_at_timeline_rate(tl: &Timeline, p: &Placed) -> (String, String) {
+    use crate::rate::frames_to_timecode;
+    let r = tl.rate;
+    let s = &tl.sources[p.source];
+    if s.same_rate_as(r) {
+        let a = s.tc_frames + p.source_in_native;
+        let b = a + p.duration;
+        (frames_to_timecode(a, r, s.tc_drop), frames_to_timecode(b, r, s.tc_drop))
+    } else {
+        let drop = tl.drop_frame && r.supports_drop_frame();
+        let tc_secs = s.native_rate().frames_to_seconds(s.tc_frames);
+        let a = r.seconds_to_frames(tc_secs) + p.source_in;
+        let b = a + p.duration;
+        (frames_to_timecode(a, r, drop), frames_to_timecode(b, r, drop))
+    }
+}
+
 pub fn file_url(path: &str, localhost: bool) -> String {
     let mut p = path.replace('\\', "/");
     if p.len() >= 2 && p.as_bytes()[1] == b':' {
