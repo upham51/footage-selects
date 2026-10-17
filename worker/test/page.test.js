@@ -63,7 +63,7 @@ test("the copy follows the house rules", () => {
 });
 
 test("the content security policy only opens what each feature needs", () => {
-  const plain = pageValues(config, "N");
+  const plain = pageValues({ ...config, turnstileSiteKey: "" }, "N");
   assert.match(plain.csp, /script-src 'self';/);
   assert.match(plain.csp, /frame-src 'none'/);
   assert.equal(plain.turnstileHtml, "");

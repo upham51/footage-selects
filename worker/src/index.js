@@ -12,7 +12,7 @@
 // No IP address or other tracking data is stored with a signup.
 
 import { validateSignup, EDITORS, SHOOTS, HOURS } from "./validate.js";
-import { fillPage } from "./page.js";
+import { fillPage, TURNSTILE_SITE_KEY } from "./page.js";
 
 const MAX_BODY = 4096;
 const MIN_FILL_MS = 2500;
@@ -69,8 +69,12 @@ function sameOrigin(request) {
   return origin === new URL(request.url).origin;
 }
 
-async function verifyTurnstile(env, token, ip) {
-  if (!env.TURNSTILE_SECRET_KEY) return true;
+// The check runs only when both halves are set: the secret on the Worker and the
+// public site key in site/config.json (which puts the check box on the page).
+// With only one of them, visitors could never pass, so signups go ahead on the
+// other spam protections instead.
+async function verifyTurnstile(env, token, ip, siteKey) {
+  if (!env.TURNSTILE_SECRET_KEY || !siteKey) return true;
   if (!token) return false;
   const body = new FormData();
   body.append("secret", env.TURNSTILE_SECRET_KEY);
@@ -85,7 +89,7 @@ async function verifyTurnstile(env, token, ip) {
   }
 }
 
-export async function handleSignup(request, env) {
+export async function handleSignup(request, env, siteKey = TURNSTILE_SITE_KEY) {
   if (!sameOrigin(request)) return fail(403, "wrong_origin", "Signups are only accepted from the waitlist page.");
 
   const ip = request.headers.get("CF-Connecting-IP") || "unknown";
@@ -110,7 +114,7 @@ export async function handleSignup(request, env) {
   const v = validateSignup(data);
   if (!v.ok) return form ? redirectBack(request, "invalid") : fail(400, "invalid", v.message, v.field);
 
-  if (!(await verifyTurnstile(env, data["cf-turnstile-response"], ip))) {
+  if (!(await verifyTurnstile(env, data["cf-turnstile-response"], ip, siteKey))) {
     return form ? redirectBack(request, "check") : fail(400, "check_failed", "The spam check did not pass, so nothing was saved. Complete the check above the button and try again.");
   }
 

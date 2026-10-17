@@ -8,6 +8,9 @@ import appConfig from "../../src-tauri/tauri.conf.json" with { type: "json" };
 
 export const PRODUCT_NAME = appConfig.productName;
 
+/** The public Turnstile site key from site/config.json, or "" when the check is not set up. */
+export const TURNSTILE_SITE_KEY = (siteConfig.turnstileSiteKey || "").trim();
+
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
 
 function originOf(src) {

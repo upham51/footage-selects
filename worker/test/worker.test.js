@@ -1,6 +1,6 @@
 import { test, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
-import worker, { csvCell } from "../src/index.js";
+import worker, { csvCell, handleSignup } from "../src/index.js";
 import { validateSignup } from "../src/validate.js";
 import { fakeD1 } from "./fake-d1.js";
 
@@ -174,4 +174,12 @@ test("validation trims, drops a stray 'other' description and removes duplicates
   const v = validateSignup({ email: "  a@b.co ", editor: "none", shoots: ["travel", "travel"], shoots_other: "ignored", hours_per_month: "over_40" });
   assert.ok(v.ok);
   assert.deepEqual(v.value, { email: "a@b.co", editor: "none", shoots: ["travel"], shoots_other: null, hours_per_month: "over_40" });
+});
+
+test("a Turnstile secret without a site key on the page never blocks signups", async () => {
+  env.TURNSTILE_SECRET_KEY = "test-secret-not-real";
+  globalThis.fetch = async () => { throw new Error("must not call Turnstile"); };
+  const res = await handleSignup(post(good), env, "");
+  assert.equal(res.status, 200);
+  assert.equal(rows().length, 1);
 });
