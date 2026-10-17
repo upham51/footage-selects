@@ -85,6 +85,8 @@ Frames scored per second, under Analysis, is the one setting that means analyzin
 
 ## See why a clip was kept or dropped
 
+When an analyzed clip has no selects, its row in the list already says why, with a triangle and the words Below threshold, for example "Stability averaged 17, needs 50". It names the score that missed its threshold by the most. If every average is high enough but the scores take turns dipping, it says how much of the clip one score spent under its threshold. If good stretches exist but are all short, a dash and the words Too short say how long the longest one was.
+
 Click any clip in the list. You will see three graphs, one each for focus, exposure and stability, across the length of the clip.
 
 1. The navy line is the smoothed score used for selection. The grey line behind it is the raw score of each frame.
@@ -96,6 +98,8 @@ Click any clip in the list. You will see three graphs, one each for focus, expos
 7. For log footage, the exposure graph's heading and the readout under the pointer give the middle tones in stops above or below middle grey, and how much of the picture is clipped. The table has a Stops column.
 8. Above the graphs you see which picture profile the clip was judged with and why, with a menu to choose another for this clip. Camera details read from the camera's own files (camera, lens, ISO, shutter, aperture, height and position for drones) are listed too.
 9. Shots you used in a finished video are outlined with a dashed line on the strip above the graphs, and the table says which video used them.
+
+The line under the clip's name also says how it was read: by the graphics chip, by other video hardware, or by the processor alone (software, which is slower). If hardware decoding was asked for but the computer could not do it for this clip's format, it says so.
 
 Click Back to all clips to return to the list.
 
@@ -134,7 +138,7 @@ What it cannot trace yet: punch-ins and reframes that are not centred, zoom adde
 
 ## Save your work
 
-Click Save project to save a `.selects` file. It holds every score, so when you open it again with Open project, nothing needs analyzing. The project file does not contain your footage, only where it is. If you move or rename footage, those clips are marked as missing; their scores still count, and you can relink them in your editor after export.
+Click Save project to save a `.selects` file. It holds every score, so when you open it again with Open project, nothing needs analyzing. The project file does not contain your footage, only where it is. If you move or rename footage, those clips are marked as missing; their scores still count, and you can relink them in your editor after export. The save window opens in your Documents folder the first time, and beside the saved project after that, so project files do not end up among your footage.
 
 If a clip has changed since it was analyzed, it is marked as changed and analyzed again when you click Analyze footage.
 
@@ -149,7 +153,7 @@ Choose your settings under Export:
 3. Drop frame timecode: appears for 29.97 and 59.94. Use it if your project uses drop frame timecode. The app turns it on when most of your 29.97 or 59.94 footage was recorded that way.
 4. Layout: either every full clip on track 1 with each select above it on track 2, or only the selects back to back on track 2.
 
-Click Export timeline, choose where to save and a name, and four files are written side by side:
+Click Export timeline, choose where to save and a name, and four files are written side by side. The save window starts in the same place as for projects: Documents, or the saved project's folder. The four files are:
 
 1. `.xml` for Premiere Pro and DaVinci Resolve
 2. `.fcpxml` for Final Cut Pro (DaVinci Resolve can read it too)
@@ -205,7 +209,8 @@ A check sends GitHub a request for one small file that describes the newest vers
 1. If you shoot log, set Picture profile on the right once. Sony and DJI clips name their own profile, so this matters for other cameras.
 2. Clear blue sky, plain walls and other shots with little detail score lower on focus even when sharp. Look at the clip's graph before writing it off.
 3. Intentional camera moves, like a slow pan or a push in, count as stable. Fast whip pans count as a little less stable.
-4. Footage Selects judges picture quality, not content. It cannot tell a great moment from a dull one, so treat its selects as a first pass.
+4. Night and other low-light footage: a low stability score means the camera really moved. Tests with known camera movement show darkness and sensor noise do not change the motion measurement. Dark scenes do score lower on exposure, because the app cannot tell a night scene from an underexposed day scene; lower Exposure at least for a night shoot.
+5. Footage Selects judges picture quality, not content. It cannot tell a great moment from a dull one, so treat its selects as a first pass.
 
 ## Good to know
 

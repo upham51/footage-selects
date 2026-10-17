@@ -13,7 +13,15 @@
 
 ffmpeg decodes each clip, skipping non-reference frames at the decoder, keeps the first frame in each sample interval with its real timestamp, downsizes it to about 480 pixels wide in grayscale and pipes raw pixels to the engine. On macOS it first tries VideoToolbox with dropping and downsizing on the GPU, then VideoToolbox with frames copied back, then software. Elsewhere it tries ffmpeg's automatic hardware decoding, then software.
 
-Per frame the engine measures the variance of the Laplacian (focus), a luma histogram (clipped highlights, crushed shadows, the 2nd to 98th percentile spread, mean level), and global translation from the previous sample by coarse-to-fine block matching on an image pyramid. Stability compares each sample's motion with the average of its neighbours, so steady movement scores well and jitter does not. Raw measurements are cached in the project; scores and selection are recomputed from them on demand.
+The GPU path (`Decoder::GpuScaled`) downloads small frames with `hwdownload`, whose format must be the one VideoToolbox decoded into. `analyze::videotoolbox_download_format` mirrors ffmpeg's own choice (`videotoolbox_best_pixel_format`): nv12 or p010 for 4:2:0, nv16 or p210 for 4:2:2, nv24 or p410 for 4:4:4, p216 or p416 above 10 bits; formats with alpha or RGB skip the GPU path. Rotated clips use it too: `-noautorotate` is set and `analyze::gpu_filter` downsizes to the unrotated size, then turns the small gray frame with `transpose` the way ffmpeg's automatic rotation would (tested on Linux with ordinary filters standing in for the GPU ones).
+
+Skipping non-reference frames (`-skip_frame noref`) happens in libavcodec's H.264 and HEVC parsers before a frame reaches any hardware decoder, so it applies to VideoToolbox and D3D11 as well. It only helps footage with non-reference B-frames: a 4K 120 fps HEVC clip with a B-frame pyramid decodes 289 of 719 frames, one coded with P-frames only decodes all 719.
+
+ffmpeg runs at `-loglevel verbose` so it reports the pixel format frames enter the filters in. `analyze::decoder_used` turns that into the label stored in `ClipAnalysis::decoder` and shown in the clip view: hardware copy-back gives nv12 or p010 where a software decoder gives planar yuv420p, so a request for hardware decoding that ffmpeg quietly served in software is recorded as software.
+
+Per frame the engine measures the variance of the Laplacian (focus), a luma histogram (clipped highlights, crushed shadows, the 2nd to 98th percentile spread, mean level), and global translation from the previous sample by coarse-to-fine block matching on an image pyramid. Stability compares each sample's motion with the average of its neighbours, so steady movement scores well and jitter does not. Raw measurements are cached in the project; scores and selection are recomputed from them on demand. Block matching sums absolute differences row by row in a form the compiler vectorizes (`metrics::row_difference`); per sampled frame the engine's own work is about 0.15 ms Laplacian, 0.12 ms histogram, 0.55 ms block matching and 0.12 ms fingerprint on one core of the Linux test machine, so ffmpeg's decoding is nearly all of the time.
+
+When an analysed clip has no selects, `selection::no_select_reason` names the score whose clip average misses its threshold by the most points (average rounded down, so a near miss never reads as passing). If all averages pass, it reports the score that is under its threshold for the largest share of samples, or that the passing stretches were all shorter than the minimum. The list row shows it.
 
 Each frame also stores a ladder of luma percentiles (1, 2, 5, 10, 25, 50, 75, 90, 95, 98 and 99%), the brightest value and the share of pixels within one level of it, and three 64-bit difference hashes (whole frame, centred 2.39:1, centred 9:16). The analysis picture is grayscale with video black at 0 and white at 255, so a luma maps exactly back to a 10-bit code value. Because tone curves are monotonic, the ladder can be mapped through any log curve later, which is how a profile change rescores without decoding: `tone::StopsTable` turns luma into stops from middle grey with the maker's published formula, and `tone::log_exposure` scores clipping (a pile-up at the top of the curve), underexposure, deep shadows and very flat light. The profile is resolved per clip in `ProjectClip::resolved_profile`: chosen for the clip, then named by the camera (`sidecar.rs` reads Sony `M01.XML` and DJI `.SRT`, `probe.rs` reads HLG tags), then the project's fallback, then `tone::looks_like_log`, then standard.
 
@@ -72,9 +80,14 @@ OpenTimelineIO's FCPXML reader truncates frame rates to whole numbers (23.976 be
 Measuring speed on your own footage:
 
 ```
-cargo run --release -p selects_engine --example bench -- /path/to/footage 3
-cargo run --release -p selects_engine --example inspect -- clip.mov
+cargo run --release -p selects_engine --example bench -- /path/to/footage 3      # whole folder, 3 clips at once, decoders used
+cargo run --release -p selects_engine --example stages -- clip.mov               # ffmpeg alone, then each measurement, then the full analysis
+cargo run --release -p selects_engine --example inspect -- clip.mov              # every sample's measurements and scores
+cargo run --release -p selects_engine --example inspect -- --summary *.mov       # one line of average scores per clip
+dev/speed-clips.sh /tmp/speed-clips 5                                            # synthetic 4K H.264 and HEVC test clips
 ```
+
+Set `FOOTAGE_SELECTS_FFMPEG_DIR` to time the ffmpeg that ships (`scripts/build-ffmpeg.sh linux out`) rather than the one on your PATH. The "Speed check (Apple silicon)" workflow, run by hand from the Actions tab, does all of this on GitHub's Apple silicon runner with the shipped macOS ffmpeg and compares against an earlier version.
 
 ## Updates
 
