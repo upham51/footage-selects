@@ -34,37 +34,36 @@
   syncOther();
 
   const FIELDS = ["email", "editor", "shoots", "hours_per_month"];
-  function clearErrors() {
-    for (const f of FIELDS) {
-      const el = document.getElementById(`${f}-error`);
-      el.hidden = true;
-      el.textContent = "";
-      const input = document.getElementById(f);
-      if (input) input.removeAttribute("aria-invalid");
-    }
+  // The inputs a question's message belongs to. "What do you shoot?" has the boxes and the text box.
+  function inputsFor(name) {
+    return name === "shoots" ? [...form.querySelectorAll('[name="shoots"]'), otherText] : [document.getElementById(name)].filter(Boolean);
   }
-  // An error goes away as soon as that answer is changed.
-  form.addEventListener("input", (e) => clearField(e.target.name === "shoots_other" ? "shoots" : e.target.name));
-  form.addEventListener("change", (e) => clearField(e.target.name === "shoots_other" ? "shoots" : e.target.name));
   function clearField(name) {
     const el = document.getElementById(`${name}-error`);
-    if (!el || el.hidden) return;
+    if (!el) return;
     el.hidden = true;
     el.textContent = "";
-    const input = document.getElementById(name);
-    if (input) input.removeAttribute("aria-invalid");
+    for (const input of inputsFor(name)) input.removeAttribute("aria-invalid");
   }
+  function clearErrors() {
+    for (const f of FIELDS) clearField(f);
+  }
+  // An error goes away as soon as that answer is changed.
+  const changed = (e) => clearField(e.target.name === "shoots_other" ? "shoots" : e.target.name);
+  form.addEventListener("input", changed);
+  form.addEventListener("change", changed);
 
-  function fieldError(field, message) {
+  // Shows a message under the question. The first problem also gets the focus.
+  function fieldError(field, message, focus = true) {
     const key = field === "shoots_other" ? "shoots" : field;
     const el = document.getElementById(`${key}-error`);
     if (!el) return false;
     el.textContent = message;
     el.hidden = false;
-    const input = document.getElementById(key) || form.querySelector(`[name="${key}"]`);
+    const input = document.getElementById(field) || document.getElementById(key) || form.querySelector(`[name="${key}"]`);
     if (input) {
       input.setAttribute("aria-invalid", "true");
-      input.focus();
+      if (focus) input.focus();
     }
     return true;
   }
@@ -80,15 +79,17 @@
     return data;
   }
 
-  // Quick checks before sending. The server checks everything again.
+  // Quick checks before sending, returning every problem at once. The server checks everything again.
   function check(d) {
+    const problems = [];
     const email = (d.email || "").trim();
-    if (!email) return ["email", "Enter your email address."];
-    if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) return ["email", "That email address does not look complete. Check for a missing @ or ending such as .com."];
-    if (!d.editor) return ["editor", "Choose the editor you use, or that you don't edit yet."];
-    if (d.shoots.length === 0) return ["shoots", "Choose at least one kind of footage you shoot."];
-    if (!d.hours_per_month) return ["hours_per_month", "Choose roughly how many hours of footage you shoot a month."];
-    return null;
+    if (!email) problems.push(["email", "Enter your email address."]);
+    else if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) problems.push(["email", "That email address does not look complete. Check for a missing @ or ending such as .com."]);
+    if (!d.editor) problems.push(["editor", "Choose the editor you use, or that you don't edit yet."]);
+    if (d.shoots.length === 0) problems.push(["shoots", "Choose at least one kind of footage you shoot."]);
+    else if (d.shoots.includes("other") && !(d.shoots_other || "").trim()) problems.push(["shoots_other", "Say what else you shoot, or untick Something else."]);
+    if (!d.hours_per_month) problems.push(["hours_per_month", "Choose roughly how many hours of footage you shoot a month."]);
+    return problems;
   }
 
   function done() {
@@ -101,9 +102,9 @@
     clearErrors();
     statusBox.innerHTML = "";
     const data = collect();
-    const problem = check(data);
-    if (problem) {
-      fieldError(problem[0], problem[1]);
+    const problems = check(data);
+    if (problems.length) {
+      problems.forEach(([field, message], i) => fieldError(field, message, i === 0));
       return;
     }
     button.disabled = true;

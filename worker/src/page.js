@@ -58,7 +58,7 @@ export function pageValues(config = siteConfig, productName = PRODUCT_NAME, now 
     priceIncludes: p.includes,
     year: String(now.getUTCFullYear()),
     demoHtml,
-    turnstileHtml: turnstile ? `<div class="cf-turnstile" data-sitekey="${esc(turnstile)}"></div>` : "",
+    turnstileHtml: turnstile ? `<div class="cf-turnstile" data-sitekey="${esc(turnstile)}"></div>${NOSCRIPT_NOTICE}` : "",
     turnstileScript: turnstile ? `<script src="https://challenges.cloudflare.com/turnstile/v0/api.js" async defer></script>` : "",
     pageUrl: config.pageUrl || "",
     csp,
@@ -69,6 +69,9 @@ const TICK = '<svg class="icon" viewBox="0 0 14 14" aria-hidden="true"><path d="
 const TRIANGLE = '<svg class="icon" viewBox="0 0 14 14" aria-hidden="true"><path d="M7 1.8l5.6 9.9H1.4z"/><path d="M7 5.6v2.6M7 10.1v.1"/></svg>';
 const NOT_ADDED = "You were not added yet";
 
+// Shown before anyone fills in the form, when the spam check is on and JavaScript is off.
+const NOSCRIPT_NOTICE = `<noscript><div class="status status-failed" role="note">${TRIANGLE}<div><strong>This form needs JavaScript</strong><p>The spam check above the button only runs with JavaScript, and it is turned off in your browser. Turn it on for this page and reload, or signups from this browser cannot be saved.</p></div></div></noscript>`;
+
 /** The message shown after a form post made without JavaScript (?signup=...). */
 export function signupStatusHtml(status) {
   const box = (kind, title, body) =>
@@ -76,7 +79,8 @@ export function signupStatusHtml(status) {
   switch (status) {
     case "ok": return box("done", "You are on the list", "Thank you. You will get an email when there is something to try. Nothing else will be sent.");
     case "invalid": return box("failed", NOT_ADDED, "One of the answers was missing or not recognised, so nothing was saved. Check each question and try again.");
-    case "check": return box("failed", NOT_ADDED, "The spam check did not pass, so nothing was saved. Complete the check above the button and try again.");
+    case "check": return box("failed", NOT_ADDED, "The spam check did not pass, so nothing was saved. Wait for the check above the button to show Success, then send the form again.");
+    case "nojs": return box("failed", NOT_ADDED, "The spam check needs JavaScript, and it looks turned off in your browser, so nothing was saved. Turn JavaScript on for this page, reload it and send the form again.");
     case "error": return box("failed", NOT_ADDED, "The waitlist could not be reached just now, so nothing was saved. Try again in a few minutes.");
     default: return "";
   }
@@ -121,6 +125,7 @@ export function fillPage(response, env, values = pageValues(), signupStatus = ""
   headers.set("X-Content-Type-Options", "nosniff");
   headers.set("Referrer-Policy", "strict-origin-when-cross-origin");
   headers.set("X-Frame-Options", "DENY");
-  headers.set("Cache-Control", "public, max-age=300");
+  // Checked with the server on every visit, so a new version reaches visitors at once.
+  headers.set("Cache-Control", "no-cache");
   return new Response(out.body, { status: out.status, headers });
 }

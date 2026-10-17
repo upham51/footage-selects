@@ -547,11 +547,32 @@ fn csv_rows_quote_and_scores() {
     let lines: Vec<&str> = text.trim_start_matches('\u{feff}').lines().collect();
     assert_eq!(lines[0], csv::HEADER.join(","));
     assert_eq!(lines.len(), 4);
-    assert!(lines[1].starts_with("1,A001_C001.mov,/Volumes/Shoot 1/Day 1/A001_C001.mov,01:00:02:00,01:00:05:00,2.000,5.000,3.000,01:00:02:00,01:00:05:00,V2,82,74,91,82,strong,25,25"), "{}", lines[1]);
+    assert!(lines[1].starts_with("1,A001_C001.mov,/Volumes/Shoot 1/Day 1/A001_C001.mov,01:00:02:00,01:00:05:00,01:00:02:00,01:00:05:00,2.000,5.000,3.000,01:00:02:00,01:00:05:00,V2,82,74,91,82,strong,25,25"), "{}", lines[1]);
     // A name with a comma and quotes is quoted and its quotes doubled.
     assert!(lines[3].contains("\"B-cam, \"\"wide\"\".mp4\""), "{}", lines[3]);
     assert_eq!(csv::field("=SUM(A1)"), "\"'=SUM(A1)\"");
     assert_eq!(csv::field("plain"), "plain");
+}
+
+#[test]
+fn csv_source_timecode_at_timeline_rate_matches_the_edl() {
+    // The 25 fps clip in a 29.97 timeline: the EDL gives its source at 29.97, and so must the CSV.
+    let tl = timeline(Rate::new(30000, 1001), Some(true), TimelineLayout::FullClipsBelow);
+    let events = parse_events(&edl::write(&tl));
+    let text = csv::write(&tl);
+    let rows: Vec<Vec<String>> = text
+        .trim_start_matches('\u{feff}')
+        .lines()
+        .skip(1)
+        .map(|l| l.rsplitn(21, ',').collect::<Vec<_>>().into_iter().rev().map(String::from).collect())
+        .collect();
+    assert_eq!(rows.len(), events.len());
+    for (row, e) in rows.iter().zip(&events) {
+        // Columns counted from the end, so a comma in the file name does not shift them.
+        assert_eq!(&row[row.len() - 17..row.len() - 15], &e[4..6], "{row:?}");
+    }
+    // The clip-rate columns keep the clip's own frame count: 10:00:01:00 at 25 fps.
+    assert!(rows[2].contains(&"10:00:01:00".to_string()), "{:?}", rows[2]);
 }
 
 /* ---------------- files and paths ---------------- */

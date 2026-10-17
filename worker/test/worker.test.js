@@ -120,6 +120,27 @@ test("when the spam check is set up, a failed check saves nothing and a passed o
   assert.equal(rows().length, 1);
 });
 
+test("without JavaScript the spam check cannot run, and the visitor is told why", async () => {
+  env.TURNSTILE_SECRET_KEY = "test-secret-not-real";
+  globalThis.fetch = async () => { throw new Error("no call out expected"); };
+  const form = new URLSearchParams({ ...good, shoots: "travel" }).toString();
+  const res = await worker.fetch(post(form, { type: "application/x-www-form-urlencoded" }), env);
+  assert.equal(res.headers.get("Location"), `${ORIGIN}/?signup=nojs#waitlist`);
+  const viaScript = await worker.fetch(post(good), env);
+  const out = await viaScript.json();
+  assert.equal(out.code, "check_missing");
+  assert.match(out.message, /Reload the page/);
+  assert.equal(rows().length, 0);
+});
+
+test("Something else needs a description", async () => {
+  const res = await worker.fetch(post({ ...good, shoots: ["travel", "other"], shoots_other: "  " }), env);
+  assert.equal(res.status, 400);
+  assert.equal((await res.json()).field, "shoots_other");
+  const ok = await worker.fetch(post({ ...good, shoots: ["other"], shoots_other: "Boats" }), env);
+  assert.equal(ok.status, 200);
+});
+
 test("if the database is down, the visitor is told nothing was saved", async () => {
   env.DB = fakeD1({ failing: true });
   const res = await worker.fetch(post(good), env);

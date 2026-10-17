@@ -114,8 +114,14 @@ export async function handleSignup(request, env, siteKey = TURNSTILE_SITE_KEY) {
   const v = validateSignup(data);
   if (!v.ok) return form ? redirectBack(request, "invalid") : fail(400, "invalid", v.message, v.field);
 
-  if (!(await verifyTurnstile(env, data["cf-turnstile-response"], ip, siteKey))) {
-    return form ? redirectBack(request, "check") : fail(400, "check_failed", "The spam check did not pass, so nothing was saved. Complete the check above the button and try again.");
+  const token = data["cf-turnstile-response"];
+  if (!(await verifyTurnstile(env, token, ip, siteKey))) {
+    // The check only runs with JavaScript, so a plain form post without a token
+    // means JavaScript is off rather than a failed check.
+    if (form) return redirectBack(request, token ? "check" : "nojs");
+    return token
+      ? fail(400, "check_failed", "The spam check did not pass, so nothing was saved. Wait for the check above the button to show Success, then send the form again.")
+      : fail(400, "check_missing", "The spam check had not loaded, so nothing was saved. Reload the page, wait for the check above the button to show Success, then send the form again.");
   }
 
   const s = v.value;

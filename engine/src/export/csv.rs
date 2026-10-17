@@ -1,4 +1,8 @@
 //! A spreadsheet of the selects, one row each.
+//!
+//! Source timecode is given twice. At the timeline rate it matches the EDL; at
+//! the clip's own rate it matches what an editor shows for the clip itself, so a
+//! 120 fps clip can have frame numbers above 23 there.
 
 use super::{pct, Timeline};
 use crate::rate::frames_to_timecode;
@@ -7,8 +11,10 @@ pub const HEADER: &[&str] = &[
     "Select",
     "Clip",
     "File",
-    "Source in",
-    "Source out",
+    "Source in (timeline rate)",
+    "Source out (timeline rate)",
+    "Source in (clip rate)",
+    "Source out (clip rate)",
     "Source in (seconds)",
     "Source out (seconds)",
     "Length (seconds)",
@@ -51,10 +57,13 @@ pub fn write(tl: &Timeline) -> String {
         let native = s.native_rate();
         let src_in = s.tc_frames + native.seconds_to_frames(r.frames_to_seconds(p.source_in));
         let src_out = s.tc_frames + native.seconds_to_frames(r.frames_to_seconds(p.source_out()));
+        let (tl_in, tl_out) = super::source_timecodes_at_timeline_rate(tl, p);
         let row = [
             m.number.to_string(),
             s.info.name.clone(),
             s.info.path.clone(),
+            tl_in,
+            tl_out,
             frames_to_timecode(src_in, native, s.tc_drop),
             frames_to_timecode(src_out, native, s.tc_drop),
             format!("{:.3}", r.frames_to_seconds(p.source_in)),

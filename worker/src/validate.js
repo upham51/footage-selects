@@ -48,6 +48,7 @@ export function validateSignup(input) {
 
   let shootsOther = get("shoots_other");
   if (!shoots.includes("other")) shootsOther = "";
+  if (shoots.includes("other") && !shootsOther) return { ok: false, field: "shoots_other", message: "Say what else you shoot, or untick Something else." };
   if (shootsOther.length > 100) return { ok: false, field: "shoots_other", message: "Keep the description under 100 characters." };
 
   const hours = get("hours_per_month");

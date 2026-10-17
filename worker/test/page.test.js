@@ -70,6 +70,7 @@ test("the content security policy only opens what each feature needs", () => {
   const withCheck = pageValues({ ...config, turnstileSiteKey: "0x4AAA-test" }, "N");
   assert.match(withCheck.csp, /script-src 'self' https:\/\/challenges\.cloudflare\.com/);
   assert.match(withCheck.turnstileHtml, /data-sitekey="0x4AAA-test"/);
+  assert.match(withCheck.turnstileHtml, /<noscript>[\s\S]*needs JavaScript/, "people without JavaScript are told before they fill in the form");
 });
 
 test("the demo video slot shows the video from config, escaped, and allows its host", () => {
@@ -83,6 +84,7 @@ test("the demo video slot shows the video from config, escaped, and allows its h
 test("visitors without JavaScript see the result of their signup", async () => {
   const { signupStatusHtml } = await import("../src/page.js");
   assert.match(signupStatusHtml("ok"), /status-done[\s\S]*You are on the list/);
-  for (const s of ["invalid", "check", "error"]) assert.match(signupStatusHtml(s), /status-failed[\s\S]*nothing was saved/);
+  assert.match(signupStatusHtml("nojs"), /needs JavaScript/);
+  for (const s of ["invalid", "check", "nojs", "error"]) assert.match(signupStatusHtml(s), /status-failed[\s\S]*nothing was saved/);
   assert.equal(signupStatusHtml("<script>"), "");
 });

@@ -152,10 +152,19 @@ a:hover { color: var(--navy-hover); }
 .input:hover { border-color: #CFC9BB; }
 .input[aria-invalid="true"] { border-color: var(--red); }
 select.input { appearance: none; background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 14 14' fill='none' stroke='%232C4A6E' stroke-width='1.7' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M3.5 5.5L7 9l3.5-3.5'/%3E%3C/svg%3E"); background-repeat: no-repeat; background-position: right 12px center; background-size: 14px; padding-right: 36px; }
-.choices { border: 0; margin: 0; padding: 0; display: grid; grid-template-columns: 1fr 1fr; column-gap: 16px; }
-.choices legend { grid-column: 1 / -1; }
+.choices { border: 0; margin: 18px 0 0; padding: 0; display: grid; grid-template-columns: 1fr 1fr; column-gap: 16px; }
+/* A legend ignores its own top margin, so the gap above it comes from the fieldset. */
+.choices legend { grid-column: 1 / -1; margin-top: 0; }
 .choices .input { grid-column: 1 / -1; margin-top: 4px; }
 @media (max-width: 480px) { .choices { grid-template-columns: 1fr; } }
+/* Finger sized targets on touch screens: the whole row is tappable. */
+@media (pointer: coarse), (max-width: 640px) {
+  .check { min-height: 44px; padding: 0; }
+  .check input { width: 20px; height: 20px; }
+  .wordmark { display: inline-flex; align-items: center; min-height: 44px; }
+  .topnav .btn-small { min-height: 44px; padding: 0 16px; }
+  .faq summary { min-height: 44px; }
+}
 .check { display: flex; gap: 9px; align-items: center; font-size: 14.5px; padding: 5px 0; cursor: pointer; }
 .check input { accent-color: var(--navy); width: 16px; height: 16px; margin: 0; }
 .field-error { color: var(--red); font-size: 13.5px; margin: 6px 0 0; display: flex; gap: 6px; align-items: center; }

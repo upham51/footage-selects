@@ -61,7 +61,7 @@ python3 -m venv .venv
 dev/validate_matrix.sh /tmp/footage-selects-matrix .venv/bin/python
 ```
 
-OpenTimelineIO's FCPXML reader truncates frame rates to whole numbers (23.976 becomes 23), so FCPXML is only read back at whole-number rates. The engine's own FCPXML tests cover the NTSC rates.
+OpenTimelineIO's FCPXML reader truncates frame rates to whole numbers (23.976 becomes 23), so FCPXML is only read back at whole-number rates, and only when every clip is at the timeline rate. With mixed rates (for example 119.88 fps clips in a 24 fps timeline) its reader places connected clips differently from Final Cut Pro, because FCPXML gives a connected clip's offset in its parent clip's own time; a disagreement there is the reader's limit, not a broken file. Only Final Cut Pro itself can confirm those files. The engine's own FCPXML tests cover the NTSC rates.
 
 Measuring speed on your own footage:
 
