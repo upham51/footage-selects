@@ -6,7 +6,11 @@ use selects_engine::probe::{collect_video_files, probe, VIDEO_EXTENSIONS};
 use selects_engine::project::{Project, TimelineLayout, PROJECT_EXTENSION};
 use selects_engine::rate::Rate;
 use selects_engine::scores::ScoreSeries;
+use selects_engine::project::ResolvedProfile;
 use selects_engine::selection::{Segment, SelectionSettings};
+use selects_engine::sidecar::CameraNotes;
+use selects_engine::taste::FitResult;
+use selects_engine::tone::ToneProfile;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::sync::atomic::Ordering;
@@ -146,6 +150,7 @@ pub fn set_selection(state: State<'_, AppState>, selection: SelectionSettings) -
         s.smoothing = s.smoothing.clamp(0.0, 10.0);
         s.min_length = s.min_length.clamp(0.25, 60.0);
         s.max_length = s.max_length.clamp(s.min_length, 300.0);
+        // keep_moves_whole is a plain on or off.
         if p.selection != s {
             p.selection = s;
             state.dirty.store(true, Ordering::Relaxed);
@@ -229,6 +234,16 @@ pub struct ClipDetail {
     pub sample_rate: Option<f64>,
     pub decoder: Option<String>,
     pub analysis_seconds: Option<f64>,
+    /// The profile used for exposure and how it was decided.
+    pub profile: ResolvedProfile,
+    /// The profile chosen by hand for this clip, if any.
+    pub chosen_profile: Option<ToneProfile>,
+    /// What the camera detected on its own, if anything.
+    pub camera_profile: Option<String>,
+    pub camera: Option<CameraNotes>,
+    pub shutter_warning: Option<String>,
+    /// Shots finished videos took from this clip: start, end, video name.
+    pub used: Vec<(f64, f64, String)>,
 }
 
 #[tauri::command]
@@ -237,7 +252,8 @@ pub fn clip_detail(state: State<'_, AppState>, id: u64) -> CmdResult<ClipDetail>
     let c = p
         .clip(id)
         .ok_or("That clip is no longer in the project. It may have been removed.")?;
-    let sel = c.select(&p.selection);
+    let fallback = p.fallback_profile;
+    let sel = c.select(&p.selection, fallback);
     Ok(ClipDetail {
         id,
         name: c
@@ -249,13 +265,158 @@ pub fn clip_detail(state: State<'_, AppState>, id: u64) -> CmdResult<ClipDetail>
         duration: c.info.as_ref().map(|i| i.duration).unwrap_or(0.0),
         measured_until: c.measured_until(),
         info: c.info.clone(),
-        raw: c.scores().unwrap_or_default(),
+        raw: c.scores(fallback).unwrap_or_default(),
         smoothed: sel.smoothed.clone(),
         segments: sel.segments.clone(),
         selection: p.selection.clone(),
         sample_rate: c.analysis.as_ref().map(|a| a.sample_rate),
         decoder: c.analysis.as_ref().map(|a| a.decoder.clone()),
         analysis_seconds: c.analysis.as_ref().filter(|a| a.complete).map(|a| a.elapsed),
+        profile: c.resolved_profile(fallback),
+        chosen_profile: c.profile,
+        camera_profile: c
+            .info
+            .as_ref()
+            .and_then(|i| i.detected_profile.as_ref())
+            .map(|d| format!("{}, named by {}", d.profile.label(), d.source)),
+        camera: c.info.as_ref().and_then(|i| i.camera.clone()),
+        shutter_warning: c
+            .info
+            .as_ref()
+            .and_then(|i| i.camera.as_ref().and_then(|n| n.shutter_warning(i.rate.fps()))),
+        used: selects_engine::taste::moments_on_clip(&p, id),
+    })
+}
+
+/// The profile for clips whose camera does not say. Also remembered for new projects.
+#[tauri::command]
+pub fn set_fallback_profile(app: AppHandle, state: State<'_, AppState>, profile: Option<ToneProfile>) -> StateDto {
+    {
+        let mut p = state.project.lock().unwrap();
+        if p.fallback_profile != profile {
+            p.fallback_profile = profile;
+            state.dirty.store(true, Ordering::Relaxed);
+        }
+    }
+    if let Some(path) = crate::updates::settings_path(&app) {
+        let mut s = crate::updates::Settings::load(&path);
+        s.fallback_profile = profile;
+        // Remembering is a convenience; the project keeps the choice either way.
+        let _ = s.save(&path);
+    }
+    state.snapshot()
+}
+
+/// A profile for one clip, or None to go back to the automatic choice.
+#[tauri::command]
+pub fn set_clip_profile(state: State<'_, AppState>, id: u64, profile: Option<ToneProfile>) -> CmdResult<StateDto> {
+    {
+        let mut p = state.project.lock().unwrap();
+        let c = p
+            .clip_mut(id)
+            .ok_or("That clip is no longer in the project. It may have been removed.")?;
+        if c.profile != profile {
+            c.profile = profile;
+            state.dirty.store(true, Ordering::Relaxed);
+        }
+    }
+    Ok(state.snapshot())
+}
+
+#[derive(Serialize)]
+pub struct TraceResult {
+    pub added: Vec<String>,
+    /// File name and plain-language reason.
+    pub failed: Vec<(String, String)>,
+    pub cancelled: bool,
+}
+
+/// Choose finished videos, fingerprint them and trace their shots to the clips.
+#[tauri::command]
+pub async fn add_finished_videos(app: AppHandle) -> CmdResult<Option<TraceResult>> {
+    let Some(picked) = app
+        .dialog()
+        .file()
+        .set_title("Choose finished videos you made from this footage")
+        .add_filter("Video", VIDEO_EXTENSIONS)
+        .blocking_pick_files()
+    else {
+        return Ok(None);
+    };
+    let paths: Vec<PathBuf> = picked.into_iter().filter_map(|p| p.into_path().ok()).collect();
+    let state = app.state::<AppState>();
+    if state.tracing.lock().unwrap().is_some() {
+        return Err("Finished videos are already being read. Wait for them to finish, then add more.".into());
+    }
+    state.tracing_cancel.store(false, Ordering::Relaxed);
+    let total = paths.len();
+    let mut out = TraceResult { added: vec![], failed: vec![], cancelled: false };
+    for (i, path) in paths.iter().enumerate() {
+        let name = path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+        *state.tracing.lock().unwrap() = Some((name.clone(), i, total));
+        let _ = app.emit(EVENT_STATE, ());
+        let print = selects_engine::reference::fingerprint_reference(
+            path,
+            selects_engine::reference::REFERENCE_SAMPLE_RATE,
+            &state.tracing_cancel,
+        );
+        match print {
+            Ok(print) => {
+                let mut p = state.project.lock().unwrap();
+                let fv = selects_engine::taste::trace(&p, &print);
+                p.finished_videos.retain(|f| f.path != fv.path);
+                p.finished_videos.push(fv);
+                state.dirty.store(true, Ordering::Relaxed);
+                out.added.push(name);
+            }
+            Err(selects_engine::analyze::AnalyzeError::Cancelled) => {
+                out.cancelled = true;
+                break;
+            }
+            Err(e) => out.failed.push((name, e.to_string())),
+        }
+    }
+    *state.tracing.lock().unwrap() = None;
+    let _ = app.emit(EVENT_STATE, ());
+    Ok(Some(out))
+}
+
+#[tauri::command]
+pub fn stop_tracing(state: State<'_, AppState>) {
+    state.tracing_cancel.store(true, Ordering::Relaxed);
+}
+
+#[tauri::command]
+pub fn remove_finished_video(state: State<'_, AppState>, path: String) -> StateDto {
+    {
+        let mut p = state.project.lock().unwrap();
+        let before = p.finished_videos.len();
+        p.finished_videos.retain(|f| f.path != path);
+        if p.finished_videos.len() != before {
+            state.dirty.store(true, Ordering::Relaxed);
+        }
+    }
+    state.snapshot()
+}
+
+/// Trace every finished video again, for example after adding footage.
+#[tauri::command]
+pub fn retrace_finished_videos(state: State<'_, AppState>) -> StateDto {
+    {
+        let mut p = state.project.lock().unwrap();
+        selects_engine::taste::retrace_all(&mut p);
+        state.dirty.store(true, Ordering::Relaxed);
+    }
+    state.snapshot()
+}
+
+/// Settings that keep more of the shots the finished videos used. Nothing
+/// changes until the person applies them with set_selection.
+#[tauri::command]
+pub async fn fit_to_finished_videos(app: AppHandle) -> CmdResult<FitResult> {
+    let snapshot = app.state::<AppState>().project.lock().unwrap().clone();
+    selects_engine::taste::fit(&snapshot).ok_or_else(|| {
+        "None of the finished videos' shots were found in this project's clips, so there is nothing to learn from yet. Add the footage those videos were cut from, let it analyze, then try again.".to_string()
     })
 }
 
@@ -285,7 +446,9 @@ fn stop_and_wait(app: &AppHandle) {
 pub async fn new_project(app: AppHandle) -> StateDto {
     stop_and_wait(&app);
     let state = app.state::<AppState>();
-    *state.project.lock().unwrap() = Project::new();
+    let mut fresh = Project::new();
+    fresh.fallback_profile = remembered_fallback(&app);
+    *state.project.lock().unwrap() = fresh;
     *state.project_path.lock().unwrap() = None;
     state.dirty.store(false, Ordering::Relaxed);
     state.snapshot()
@@ -410,6 +573,13 @@ pub async fn close_app(app: AppHandle, save: bool) -> CmdResult<bool> {
         let _ = w.destroy();
     }
     Ok(true)
+}
+
+/// The profile last chosen for clips whose camera does not say.
+pub fn remembered_fallback(app: &AppHandle) -> Option<ToneProfile> {
+    crate::updates::settings_path(app)
+        .map(|p| crate::updates::Settings::load(&p))
+        .and_then(|s| s.fallback_profile)
 }
 
 #[derive(Serialize)]

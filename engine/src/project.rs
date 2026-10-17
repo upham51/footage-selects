@@ -7,7 +7,8 @@
 use crate::analyze::{ClipAnalysis, ANALYSIS_VERSION, DEFAULT_ANALYSIS_WIDTH, DEFAULT_SAMPLE_RATE};
 use crate::probe::{file_stamp, ClipInfo};
 use crate::rate::Rate;
-use crate::scores::{score_clip, ScoreSeries};
+use crate::scores::{score_clip_with, ScoreSeries, ToneContext};
+use crate::tone::{looks_like_log, ToneProfile};
 use crate::selection::{select_clip, ClipSelection, SelectionSettings, Summary};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
@@ -58,6 +59,34 @@ pub struct ProjectClip {
     /// Why the clip could not be read or analysed, in plain words.
     pub error: Option<String>,
     pub analysis: Option<ClipAnalysis>,
+    /// A profile chosen by hand for this clip, overriding everything else.
+    #[serde(default)]
+    pub profile: Option<ToneProfile>,
+}
+
+/// Where a clip's picture profile came from.
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ProfileSource {
+    /// Chosen by hand for this clip.
+    Chosen,
+    /// Named by the file's tags or a camera sidecar.
+    Camera,
+    /// The project's choice for clips that do not say.
+    Project,
+    /// Recognised from the clip's tones.
+    Picture,
+    /// Nothing suggests log.
+    Default,
+}
+
+/// A clip's profile and how it was decided.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub struct ResolvedProfile {
+    pub profile: ToneProfile,
+    pub source: ProfileSource,
+    /// Plain words, for example "Named by the camera's file C0001M01.XML".
+    pub explanation: String,
 }
 
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
@@ -105,8 +134,61 @@ impl ProjectClip {
         }
     }
 
-    pub fn scores(&self) -> Option<ScoreSeries> {
-        self.analysis.as_ref().filter(|a| !a.frames.is_empty()).map(score_clip)
+    /// Which profile to judge exposure with. In order: chosen for this clip,
+    /// named by the camera, the project's choice for clips that do not say,
+    /// recognised from the tones, standard.
+    pub fn resolved_profile(&self, fallback: Option<ToneProfile>) -> ResolvedProfile {
+        if let Some(p) = self.profile {
+            return ResolvedProfile {
+                profile: p,
+                source: ProfileSource::Chosen,
+                explanation: "Chosen for this clip.".into(),
+            };
+        }
+        if let Some(d) = self.info.as_ref().and_then(|i| i.detected_profile.as_ref()) {
+            return ResolvedProfile {
+                profile: d.profile,
+                source: ProfileSource::Camera,
+                explanation: format!("Named by {}.", d.source),
+            };
+        }
+        if let Some(p) = fallback {
+            return ResolvedProfile {
+                profile: p,
+                source: ProfileSource::Project,
+                explanation: "The project's choice for clips whose camera does not say.".into(),
+            };
+        }
+        if let Some(a) = &self.analysis {
+            if a.frames.has_ladder() && looks_like_log(&a.frames.ladder, &a.frames.vmax) {
+                return ResolvedProfile {
+                    profile: ToneProfile::GenericLog,
+                    source: ProfileSource::Picture,
+                    explanation: "The camera does not say, but the tones look like log. Choose the exact profile for more accurate exposure.".into(),
+                };
+            }
+        }
+        ResolvedProfile {
+            profile: ToneProfile::Standard,
+            source: ProfileSource::Default,
+            explanation: "Nothing in the file or its tones suggests log.".into(),
+        }
+    }
+
+    pub fn tone(&self, fallback: Option<ToneProfile>) -> ToneContext {
+        ToneContext {
+            profile: self.resolved_profile(fallback).profile,
+            full_range: self.info.as_ref().map(|i| i.full_range).unwrap_or(false),
+        }
+    }
+
+    /// Scores, judging exposure by the clip's resolved profile.
+    pub fn scores(&self, fallback: Option<ToneProfile>) -> Option<ScoreSeries> {
+        let tone = self.tone(fallback);
+        self.analysis
+            .as_ref()
+            .filter(|a| !a.frames.is_empty())
+            .map(|a| score_clip_with(a, tone))
     }
 
     /// How far into the clip the measurements reach.
@@ -122,8 +204,8 @@ impl ProjectClip {
         }
     }
 
-    pub fn select(&self, settings: &SelectionSettings) -> ClipSelection {
-        match self.scores() {
+    pub fn select(&self, settings: &SelectionSettings, fallback: Option<ToneProfile>) -> ClipSelection {
+        match self.scores(fallback) {
             Some(s) => select_clip(&s, self.measured_until(), settings),
             None => ClipSelection::default(),
         }
@@ -141,6 +223,11 @@ pub struct Project {
     pub export: ExportSettings,
     pub clips: Vec<ProjectClip>,
     pub next_id: u64,
+    /// Profile for clips whose file and camera do not say. None means
+    /// decide from each clip's tones.
+    pub fallback_profile: Option<ToneProfile>,
+    /// Finished videos traced back to these clips, to learn what gets used.
+    pub finished_videos: Vec<crate::taste::FinishedVideo>,
 }
 
 impl Default for Project {
@@ -154,6 +241,8 @@ impl Default for Project {
             export: ExportSettings::default(),
             clips: Vec::new(),
             next_id: 1,
+            fallback_profile: None,
+            finished_videos: Vec::new(),
         }
     }
 }
@@ -210,6 +299,7 @@ impl Project {
             info,
             error,
             analysis: None,
+            profile: None,
         });
         Some(id)
     }
@@ -248,7 +338,7 @@ impl Project {
             ..Default::default()
         };
         for c in &self.clips {
-            let sel = c.select(&self.selection);
+            let sel = c.select(&self.selection, self.fallback_profile);
             if let Some(info) = &c.info {
                 sum.footage_seconds += info.duration;
             }

@@ -1,7 +1,9 @@
 //! Shared app state and the snapshots sent to the window.
 
 use crate::runner::RunnerInner;
-use selects_engine::project::{FileStatus, Project, ProjectClip};
+use selects_engine::project::{FileStatus, ProfileSource, Project, ProjectClip};
+use selects_engine::taste::{report as taste_report, MissReason, TasteReport};
+use selects_engine::tone::{ToneProfile, ALL_PROFILES};
 use selects_engine::rate::{Rate, TIMELINE_RATES};
 use selects_engine::selection::{ClipSelection, SegmentStatus, SelectionSettings, Summary};
 use serde::Serialize;
@@ -27,6 +29,9 @@ pub struct AppState {
     pub dirty: AtomicBool,
     pub runner: Mutex<RunnerInner>,
     pub probing: AtomicBool,
+    /// A finished video being read: (name, videos done, videos total).
+    pub tracing: Mutex<Option<(String, usize, usize)>>,
+    pub tracing_cancel: AtomicBool,
 }
 
 #[derive(Serialize)]
@@ -62,6 +67,14 @@ pub struct ClipRow {
     pub kept: Vec<SegDto>,
     pub too_short: usize,
     pub over_limit: usize,
+    /// The picture profile exposure is judged with, and where it came from.
+    pub profile_label: String,
+    pub profile_is_log: bool,
+    pub profile_source: ProfileSource,
+    /// Shots from finished videos that came from this clip.
+    pub used: Vec<(f64, f64)>,
+    /// The camera's shutter was far faster than the frame rate suits.
+    pub choppy_shutter: bool,
 }
 
 #[derive(Serialize)]
@@ -103,6 +116,38 @@ pub struct ExportDto {
 }
 
 #[derive(Serialize)]
+pub struct ProfileOption {
+    pub id: ToneProfile,
+    pub label: &'static str,
+    pub approximate: bool,
+}
+
+#[derive(Serialize)]
+pub struct FinishedDto {
+    pub name: String,
+    pub path: String,
+    pub duration: f64,
+    pub shots: usize,
+    pub traced: usize,
+    /// More clips have been analysed since it was traced.
+    pub stale: bool,
+}
+
+#[derive(Serialize)]
+pub struct TasteDto {
+    pub report: TasteReport,
+    /// Plain words for each reason, in the same order as `report.misses`.
+    pub miss_words: Vec<String>,
+}
+
+#[derive(Serialize)]
+pub struct TracingDto {
+    pub name: String,
+    pub done: usize,
+    pub total: usize,
+}
+
+#[derive(Serialize)]
 pub struct StateDto {
     pub clips: Vec<ClipRow>,
     pub summary: Summary,
@@ -113,6 +158,26 @@ pub struct StateDto {
     pub project_name: Option<String>,
     pub project_path: Option<String>,
     pub dirty: bool,
+    pub fallback_profile: Option<ToneProfile>,
+    pub profiles: Vec<ProfileOption>,
+    pub finished_videos: Vec<FinishedDto>,
+    pub taste: Option<TasteDto>,
+    pub tracing: Option<TracingDto>,
+}
+
+pub fn profile_options() -> Vec<ProfileOption> {
+    ALL_PROFILES
+        .iter()
+        .map(|&p| ProfileOption {
+            id: p,
+            label: p.label(),
+            approximate: p.approximate(),
+        })
+        .collect()
+}
+
+fn miss_words(m: &[(MissReason, usize)]) -> Vec<String> {
+    m.iter().map(|(r, _)| r.words().to_string()).collect()
 }
 
 pub fn rate_option(r: Rate) -> RateOption {
@@ -188,6 +253,7 @@ fn clip_status(
 }
 
 pub fn clip_rows(project: &Project, selections: &[ClipSelection], runner: &RunnerInner) -> Vec<ClipRow> {
+    let all_used = selects_engine::taste::used_moments(project);
     project
         .clips
         .iter()
@@ -202,7 +268,21 @@ pub fn clip_rows(project: &Project, selections: &[ClipSelection], runner: &Runne
             } else {
                 0.0
             };
+            let resolved = c.resolved_profile(project.fallback_profile);
+            let used: Vec<(f64, f64)> = all_used
+                .iter()
+                .filter(|m| m.clip_id == c.id)
+                .map(|m| (m.start, m.end))
+                .collect();
+            let choppy_shutter = info
+                .and_then(|i| i.camera.as_ref().and_then(|n| n.shutter_warning(i.rate.fps())))
+                .is_some();
             ClipRow {
+                profile_label: resolved.profile.label().to_string(),
+                profile_is_log: resolved.profile.is_log(),
+                profile_source: resolved.source,
+                used,
+                choppy_shutter,
                 id: c.id,
                 name: path
                     .file_name()
@@ -316,6 +396,37 @@ impl AppState {
                 .map(|s| s.to_string_lossy().to_string()),
             project_path: path.map(|p| p.to_string_lossy().to_string()),
             dirty: self.dirty.load(Ordering::Relaxed),
+            fallback_profile: project.fallback_profile,
+            profiles: profile_options(),
+            finished_videos: {
+                let searchable = selects_engine::taste::clips_with_prints(&project);
+                project
+                    .finished_videos
+                    .iter()
+                    .map(|f| FinishedDto {
+                        name: f.name.clone(),
+                        path: f.path.clone(),
+                        duration: f.duration,
+                        shots: f.shots(),
+                        traced: f.traced(),
+                        stale: f.clips_searched < searchable,
+                    })
+                    .collect()
+            },
+            taste: if project.finished_videos.is_empty() {
+                None
+            } else {
+                let report = taste_report(&project);
+                Some(TasteDto {
+                    miss_words: miss_words(&report.misses),
+                    report,
+                })
+            },
+            tracing: self.tracing.lock().unwrap().as_ref().map(|(n, d, t)| TracingDto {
+                name: n.clone(),
+                done: *d,
+                total: *t,
+            }),
         }
     }
 }

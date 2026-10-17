@@ -49,6 +49,7 @@ const ICON = {
   stop: '<rect x="3.5" y="3.5" width="7" height="7" rx="1.2"/>',
   play: '<path d="M4.5 2.8v8.4L11 7z"/>',
   down: '<path d="M7 2v7M4 6l3 3 3-3M2.5 11.5h9"/>',
+  film: '<rect x="2" y="2.5" width="10" height="9" rx="1.5"/><path d="M4.6 2.5v9M9.4 2.5v9M2 5.5h2.6M2 8.5h2.6M9.4 5.5H12M9.4 8.5H12"/>',
 };
 const icon = (name, cls = "icon") => `<svg class="${cls}" viewBox="0 0 14 14" aria-hidden="true">${ICON[name]}</svg>`;
 const pill = (tone, shape, word) => `<span class="pill pill-${tone}">${icon(shape)}${esc(word)}</span>`;
@@ -70,6 +71,15 @@ const SEG_STATUS = {
   too_short: ["grey", "dash", "Too short"],
   over_limit: ["amber", "stack", "Over the per-clip limit"],
 };
+const ISSUE_WORDS = {
+  clipped_highlights: "Highlights clipped.",
+  underexposed: "Underexposed.",
+  overexposed: "Overexposed.",
+  deep_shadows: "Large areas lost in the shadows.",
+  flat: "Very flat light.",
+};
+const fmtStops = (v) => (v == null || !isFinite(v) ? "–" : `${v > 0.05 ? "+" : v < -0.05 ? "−" : ""}${Math.abs(v).toFixed(1)}`);
+const profileLabel = (id) => state?.profiles?.find((p) => p.id === id)?.label || id;
 const SEG_FILL = { kept: "#E7F1EE", too_short: "#EFF2F4", over_limit: "#FDF2E2", below_threshold: "#FCEDEC" };
 const SEG_INK = { kept: "#0F5C4E", too_short: "#7A8798", over_limit: "#9A5B00", below_threshold: "#B3261E" };
 
@@ -184,6 +194,10 @@ function stripSvg(c) {
     const x = (k.start / d) * 1000, w = Math.max(6, ((k.end - k.start) / d) * 1000);
     s += `<rect x="${x.toFixed(1)}" y="1" width="${w.toFixed(1)}" height="12" rx="3" fill="#2C4A6E"/>`;
   }
+  for (const [a, b] of c.used || []) {
+    const x = (a / d) * 1000, w = Math.max(6, ((b - a) / d) * 1000);
+    s += `<rect x="${x.toFixed(1)}" y="0.8" width="${w.toFixed(1)}" height="12.4" rx="3" fill="none" stroke="#9A5B00" stroke-width="1.6" stroke-dasharray="3 2" vector-effect="non-scaling-stroke"/>`;
+  }
   return `<svg class="strip" viewBox="0 0 1000 14" preserveAspectRatio="none" aria-hidden="true">${s}</svg>`;
 }
 
@@ -204,13 +218,21 @@ function selectsCell(c) {
   else if (!kept) text = "None meet the thresholds";
   else text = `<strong class="num">${kept}</strong> ${kept === 1 ? "select" : "selects"} · <span class="num">${fmtDur(secs)}</span>`;
   const extra = c.over_limit ? ` · ${c.over_limit} more over the limit` : "";
-  return `${stripSvg(c)}<div class="sel-count">${text}${kept ? extra : ""}</div>`;
+  const used = c.used?.length ? `<div class="sel-used">${icon("film")}${plural(c.used.length, "shot")} in your edits</div>` : "";
+  return `${stripSvg(c)}<div class="sel-count">${text}${kept ? extra : ""}</div>${used}`;
+}
+
+function clipTags(c) {
+  const bits = [];
+  if (c.profile_is_log) bits.push(`<span class="tag" title="Exposure is judged through this profile's curve">${esc(c.profile_label)}</span>`);
+  if (c.choppy_shutter) bits.push(pill("amber", "triangle", "Fast shutter"));
+  return bits.length ? `<div class="clip-tags">${bits.join("")}</div>` : "";
 }
 
 function listHtml() {
   const rows = state.clips.map((c) => `
     <tr data-clip="${c.id}">
-      <td class="name-cell"><div class="clip-name">${esc(c.name)}</div><div class="clip-sub">${esc(c.folder)}</div></td>
+      <td class="name-cell"><div class="clip-name">${esc(c.name)}</div><div class="clip-sub">${esc(c.folder)}</div>${clipTags(c)}</td>
       <td class="num tabular">${c.duration ? fmtClock(c.duration) : "–"}</td>
       <td class="tabular nowrap">${c.rate ? esc(c.rate) : "–"}${c.variable_frame_rate ? '<div class="clip-sub">Variable rate</div>' : ""}</td>
       <td class="tabular col-size">${c.width ? `${c.width}×${c.height}` : "–"}</td>
@@ -244,11 +266,14 @@ function renderMain() {
 
 function whyText(seg, sel, cap) {
   switch (seg.status) {
-    case "kept": return "Every score is at or above its threshold.";
+    case "kept":
+      if (seg.camera_move && seg.end - seg.start > sel.max_length + 0.01) return "Kept whole: one camera move, longer than the longest select.";
+      return seg.camera_move ? "Every score is at or above its threshold. Camera move." : "Every score is at or above its threshold.";
     case "below_threshold": {
       const names = seg.failed.map((f) => `${f} (${pct(sel[f + "_min"])})`);
       const list = names.length > 1 ? names.slice(0, -1).join(", ") + " and " + names[names.length - 1] : names[0];
-      return `Dropped: ${list} under the threshold.`;
+      const issue = seg.failed.includes("exposure") && seg.exposure_issue ? ` ${ISSUE_WORDS[seg.exposure_issue] || ""}` : "";
+      return `Dropped: ${list} under the threshold.${issue}`;
     }
     case "too_short": return `Dropped: good, but shorter than the ${fmtDur(sel.min_length)} minimum.`;
     case "over_limit": return `Dropped: good, but ${plural(cap, "better select is", "better selects are")} already kept in this clip.`;
@@ -301,6 +326,10 @@ function laneSvg(w, d) {
       s += `<g transform="translate(${(x0 + bw / 2 - 6).toFixed(1)},6) scale(.857)" fill="none" stroke="${SEG_INK[seg.status]}" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">${ICON[shape]}</g>`;
     }
   }
+  for (const [a, b] of d.used || []) {
+    const x0 = x(a), bw = Math.max(4, x(b) - x0);
+    s += `<rect x="${x0.toFixed(1)}" y="1" width="${bw.toFixed(1)}" height="${H - 2}" rx="5" fill="none" stroke="#9A5B00" stroke-width="1.6" stroke-dasharray="4 3"/>`;
+  }
   return `<svg viewBox="0 0 ${w} ${H}" width="${w}" height="${H}" aria-hidden="true">${s}</svg>`;
 }
 
@@ -336,6 +365,9 @@ function renderDetail() {
     info.timecode ? `Timecode <span class="num">${esc(info.timecode)}</span>` : "No timecode, starts at 00:00:00:00",
   ] : [];
   if (d.sample_rate) meta.push(`Scored at ${d.sample_rate} frames per second${d.analysis_seconds ? ` in ${fmtDur(d.analysis_seconds)}` : ""}`);
+  const isLog = d.profile && d.profile.profile !== "standard";
+  const profileHtml = profileRowHtml(d);
+  const cameraHtml = cameraRowHtml(d);
 
   // Draw at the real width of the graph area so text and strokes stay crisp.
   const w = graphWidth || Math.max(320, panel.clientWidth - 38);
@@ -351,13 +383,19 @@ function renderDetail() {
   } else {
     const keptCount = d.segments.filter((s) => s.status === "kept").length;
     const mean = (key) => pct(d.smoothed[key].reduce((a, b) => a + b, 0) / d.smoothed[key].length);
-    const graph = (key, label) => `<div class="graph"><div class="graph-head"><span class="name">${label}</span><span class="stats">Average <span class="num">${mean(key)}</span> · threshold <span class="num">${pct(d.selection[key + "_min"])}</span></span></div>${graphSvg(key, label, w - 2, d)}</div>`;
+    const keys = d.raw.key_stops || [];
+    const keyMean = keys.length ? keys.reduce((a, b) => a + b, 0) / keys.length : null;
+    const extraStats = (key) => key === "exposure" && isLog && keyMean != null ? ` · middle tones <span class="num">${fmtStops(keyMean)}</span> stops` : "";
+    const graph = (key, label) => `<div class="graph"><div class="graph-head"><span class="name">${label}</span><span class="stats">Average <span class="num">${mean(key)}</span>${extraStats(key)} · threshold <span class="num">${pct(d.selection[key + "_min"])}</span></span></div>${graphSvg(key, label, w - 2, d)}</div>`;
     const segRows = d.segments.map((s) => {
       const [t, sh, wd] = SEG_STATUS[s.status];
-      return `<tr><td class="tabular">${fmtClock(s.start)} – ${fmtClock(s.end)}</td><td class="num tabular">${fmtDur(s.end - s.start)}</td><td>${pill(t, sh, wd)}</td><td class="why">${esc(whyText(s, d.selection, keptCount))}</td>
-        <td class="num tabular">${pct(s.focus)}</td><td class="num tabular">${pct(s.exposure)}</td><td class="num tabular">${pct(s.stability)}</td><td class="num tabular">${pct(s.score)}</td></tr>`;
+      const usedIn = (d.used || []).filter(([a, b, n]) => Math.min(b, s.end) - Math.max(a, s.start) > 0.25).map(([, , n]) => n);
+      const usedText = usedIn.length ? ` Used in ${[...new Set(usedIn)].join(", ")}.` : "";
+      return `<tr><td class="tabular">${fmtClock(s.start)} – ${fmtClock(s.end)}</td><td class="num tabular">${fmtDur(s.end - s.start)}</td><td>${pill(t, sh, wd)}</td><td class="why">${esc(whyText(s, d.selection, keptCount) + usedText)}</td>
+        <td class="num tabular">${pct(s.focus)}</td><td class="num tabular">${pct(s.exposure)}</td>${isLog ? `<td class="num tabular">${fmtStops(s.key_stops)}</td>` : ""}<td class="num tabular">${pct(s.stability)}</td><td class="num tabular">${pct(s.score)}</td></tr>`;
     }).join("");
-    body = `<div class="legend"><span class="label">Stretches</span>${Object.values(SEG_STATUS).map(([t, s, wd]) => pill(t, s, wd)).join("")}${d.measured_until < d.duration - 0.01 ? pill("grey", "clock", "Not measured yet") : ""}</div>
+    const usedLegend = (d.used || []).length ? `<span class="legend-used"><svg class="icon" viewBox="0 0 14 14" aria-hidden="true"><rect x="1.5" y="3" width="11" height="8" rx="2" stroke="#9A5B00" stroke-dasharray="2.5 1.8"/></svg>Used in your edits</span>` : "";
+    body = `<div class="legend"><span class="label">Stretches</span>${Object.values(SEG_STATUS).map(([t, s, wd]) => pill(t, s, wd)).join("")}${d.measured_until < d.duration - 0.01 ? pill("grey", "clock", "Not measured yet") : ""}${usedLegend}</div>
       <div class="graphs">
         <div class="graph">${laneSvg(w, d)}</div>
         ${graph("focus", "Focus")}${graph("exposure", "Exposure")}${graph("stability", "Stability")}
@@ -365,7 +403,7 @@ function renderDetail() {
       </div>
       <div class="readout" id="readout">Move the pointer over a graph to read the scores at that moment. Navy is the smoothed score used for selection, grey the raw per-frame score, the dashed line the threshold.</div>
       <div class="seg-table"><h3 class="eyebrow" style="padding-left:18px">Every stretch of this clip</h3>
-        <table><thead><tr><th>Time</th><th class="num">Length</th><th>Result</th><th>Why</th><th class="num">Focus</th><th class="num">Exposure</th><th class="num">Stability</th><th class="num">Overall</th></tr></thead><tbody>${segRows}</tbody></table></div>`;
+        <table><thead><tr><th>Time</th><th class="num">Length</th><th>Result</th><th>Why</th><th class="num">Focus</th><th class="num">Exposure</th>${isLog ? '<th class="num" title="Middle tones in stops from middle grey">Stops</th>' : ""}<th class="num">Stability</th><th class="num">Overall</th></tr></thead><tbody>${segRows}</tbody></table></div>`;
   }
 
   panel.innerHTML = `<div class="detail">
@@ -373,13 +411,50 @@ function renderDetail() {
       <div class="detail-title"><h2 class="selectable">${esc(d.name)}</h2>${statusPill}</div>
       <div class="meta">${meta.map((m) => `<span>${m}</span>`).join("")}</div>
       <div class="meta selectable">${esc(d.path)}</div>
+      ${cameraHtml}${profileHtml}
     </div>${body}</div>`;
+  const cp = $("clip-profile");
+  if (cp) cp.value = cp.dataset.value;
   const holder = panel.querySelector(".graphs .graph");
   if (holder) {
     const real = Math.floor(holder.clientWidth);
     if (real > 0 && Math.abs(real - w) > 1) { graphWidth = real; renderDetail(); return; }
   }
   attachHover(w, d);
+}
+
+function profileRowHtml(d) {
+  if (!d.profile || !state?.profiles) return "";
+  const p = d.profile;
+  const opts = [`<option value="auto">Automatic</option>`].concat(state.profiles.map((o) => `<option value="${o.id}">${esc(o.label)}</option>`)).join("");
+  let note = "";
+  if (p.profile === "d_log_m") note = " DJI has not published the D-Log M curve, so D-Log's curve stands in and readings in stops are approximate.";
+  else if (p.profile === "generic_log") note = " An average of four published log curves stands in, so readings in stops are approximate.";
+  const how = p.profile === "standard"
+    ? "Judged on how the picture looks: blown highlights, crushed shadows and flat contrast count against it."
+    : "Judged in stops through the camera's curve: clipped highlights and underexposure count against it, the flat log look does not.";
+  return `<div class="profile-row">
+    <div><span class="profile-name">Exposure judged as ${esc(profileLabel(p.profile))}.</span> <span class="muted">${esc(p.explanation)}${esc(note)}</span><div class="muted">${esc(how)}</div></div>
+    <label class="inline-select"><span>Profile for this clip</span><select id="clip-profile" class="input input-small" data-value="${d.chosen_profile || "auto"}">${opts}</select></label>
+  </div>`;
+}
+
+function cameraRowHtml(d) {
+  const n = d.camera;
+  let html = "";
+  if (n) {
+    const bits = [];
+    if (n.camera) bits.push(esc(n.camera));
+    if (n.lens) bits.push(esc(n.lens));
+    if (n.iso) bits.push(`ISO <span class="num">${Math.round(n.iso)}</span>`);
+    if (n.shutter) bits.push(`Shutter <span class="num">1/${Math.round(1 / n.shutter)}</span>`);
+    if (n.aperture) bits.push(`<span class="num">f/${n.aperture.toFixed(1)}</span>`);
+    if (n.max_height != null) bits.push(`Up to <span class="num">${Math.round(n.max_height)}</span> m above take-off`);
+    if (n.latitude != null && n.longitude != null) bits.push(`<span class="num selectable">${n.latitude.toFixed(5)}, ${n.longitude.toFixed(5)}</span>`);
+    if (bits.length) html += `<div class="meta">${bits.map((b) => `<span>${b}</span>`).join("")}<span class="muted">From ${esc(n.source)}</span></div>`;
+  }
+  if (d.shutter_warning) html += `<div class="note">${pill("amber", "triangle", "Fast shutter")}<span>${esc(d.shutter_warning)}</span></div>`;
+  return html;
 }
 
 function attachHover(w, d) {
@@ -398,7 +473,9 @@ function attachHover(w, d) {
     for (let k = 0; k < ts.length; k++) { const dd = Math.abs(ts[k] - t); if (dd < best) { best = dd; i = k; } }
     const seg = d.segments.find((s) => t >= s.start && t < s.end);
     const word = seg ? SEG_STATUS[seg.status][2] : "Not measured yet";
-    readout.innerHTML = `At <span class="num">${fmtClock(t)}</span> · Focus <span class="num">${pct(d.smoothed.focus[i])}</span> · Exposure <span class="num">${pct(d.smoothed.exposure[i])}</span> · Stability <span class="num">${pct(d.smoothed.stability[i])}</span> · ${esc(word)}`;
+    const ks = d.raw.key_stops || [], cl = d.raw.clipped || [];
+    const logBits = ks.length ? ` · Middle tones <span class="num">${fmtStops(ks[i])}</span> stops${cl[i] > 0.005 ? ` · <span class="num">${(cl[i] * 100).toFixed(cl[i] < 0.1 ? 1 : 0)}%</span> clipped` : ""}` : "";
+    readout.innerHTML = `At <span class="num">${fmtClock(t)}</span> · Focus <span class="num">${pct(d.smoothed.focus[i])}</span> · Exposure <span class="num">${pct(d.smoothed.exposure[i])}</span>${logBits} · Stability <span class="num">${pct(d.smoothed.stability[i])}</span> · ${esc(word)}`;
   });
 }
 
@@ -459,8 +536,16 @@ function syncSide() {
     $(oid).textContent = label(key, localSel[key]);
     setFill(input);
   }
+  $("keep-moves").checked = !!localSel.keep_moves_whole;
   const sr = $("sample-rate");
   if (document.activeElement !== sr) sr.value = String(state.sample_rate);
+
+  const fp = $("fallback-profile");
+  const popts = [`<option value="auto">Decide from each clip's tones</option>`].concat((state.profiles || []).map((o) => `<option value="${o.id}">${esc(o.label)}</option>`)).join("");
+  if (fp.dataset.opts !== popts) { fp.innerHTML = popts; fp.dataset.opts = popts; }
+  if (document.activeElement !== fp) fp.value = state.fallback_profile || "auto";
+  $("profile-hint").innerHTML = profileHint();
+  renderTaste();
 
   const ex = state.export;
   const rateSel = $("timeline-rate");
@@ -479,6 +564,115 @@ function syncSide() {
   $("export-hint").textContent = hasSelects
     ? `Writes four files side by side: .xml for Premiere Pro and DaVinci Resolve, .fcpxml for Final Cut Pro, an .edl, and a .csv spreadsheet. Timeline: ${ex.timeline_rate.label} fps${ex.timeline_rate.drop_frame_capable ? (ex.drop_frame ? " drop frame" : " non drop frame") : ""}, ${ex.resolution[0]}×${ex.resolution[1]}.`
     : "There are no selects to export yet. Add footage, or lower a threshold if every clip is analyzed.";
+}
+
+function profileHint() {
+  const rows = (state?.clips || []).filter((c) => c.status !== "unreadable");
+  const log = rows.filter((c) => c.profile_is_log);
+  const base = "Sony and DJI cameras name their profile in a file beside each clip, and that comes first. Log is judged in stops through the camera's curve, so clipped highlights and underexposure count against a shot and the flat look does not.";
+  if (!rows.length) return esc(base);
+  const by = (src) => log.filter((c) => c.profile_source === src).length;
+  const parts = [];
+  if (by("camera")) parts.push(`${by("camera")} named by the camera`);
+  if (by("project")) parts.push(`${by("project")} from the choice above`);
+  if (by("picture")) parts.push(`${by("picture")} recognised from their tones`);
+  if (by("chosen")) parts.push(`${by("chosen")} chosen by hand`);
+  const std = rows.length - log.length;
+  const line = log.length
+    ? `<strong class="num">${log.length}</strong> of ${plural(rows.length, "clip")} judged as log (${parts.join(", ")}).${std ? ` ${plural(std, "clip")} judged as standard.` : ""}`
+    : `Every clip is judged as standard footage.`;
+  return `${line} ${esc(base)}`;
+}
+
+function renderTaste() {
+  const box = $("taste-body");
+  if (!box || !state) return;
+  const fv = state.finished_videos || [];
+  const tr = state.tracing;
+  let html = "";
+  if (!fv.length && !tr) {
+    html += `<p class="hint">Add videos you already cut from footage in this project. ${esc(AppName())} finds the shots you used, shows how many these settings would keep, and can fit the sliders to your choices. The videos are only read, on this computer.</p>`;
+  }
+  for (const f of fv) {
+    html += `<div class="fv-row"><div class="fv-text"><div class="fv-name" title="${esc(f.path)}">${esc(f.name)}</div>
+      <div class="fv-sub"><span class="num">${f.traced}</span> of ${plural(f.shots, "shot")} found in these clips${f.stale ? " · more clips analyzed since" : ""}</div></div>
+      <button class="link" data-act="remove-finished" data-path="${esc(f.path)}">Remove</button></div>`;
+  }
+  if (fv.some((f) => f.stale) && !tr) html += `<button class="link fv-retrace" data-act="retrace">Look for their shots in the new clips</button>`;
+  if (tr) {
+    html += `<p class="update-line"><span class="spinner" aria-hidden="true"></span>Reading ${esc(tr.name)}${tr.total > 1 ? ` (${tr.done + 1} of ${tr.total})` : ""}</p>
+      <button class="btn btn-secondary btn-small" data-act="stop-tracing">${icon("stop")}Stop reading</button>`;
+  }
+  const t = state.taste?.report;
+  if (t && t.used) {
+    const dropped = t.used - t.kept;
+    const reasons = t.misses.map(([, n], i) => `${n} ${state.taste.miss_words[i]}`).join("; ");
+    html += `<p class="taste-line"><strong class="num">${t.kept} of ${t.used}</strong> shots your edits used are kept by these settings, from ${plural(t.clips_used, "clip")}.</p>`;
+    if (dropped) html += `<p class="hint">${plural(dropped, "used shot")} would be left out: ${esc(reasons)}.</p>`;
+    html += `<button class="btn btn-primary btn-block" data-act="fit" ${tr ? "disabled" : ""}>Fit settings to my edits</button>`;
+  } else if (fv.length && !tr) {
+    html += `<p class="hint">None of these videos' shots were found in the clips analyzed so far. They may come from footage that is not in this project, or from clips still waiting to be analyzed.</p>`;
+  }
+  html += `<button class="btn btn-secondary btn-block fv-add" data-act="add-finished" ${tr ? "disabled" : ""}>${icon("film")}Add finished videos</button>`;
+  if (box.dataset.html !== html) { box.innerHTML = html; box.dataset.html = html; }
+}
+
+async function addFinished() {
+  try {
+    const r = await invoke("add_finished_videos");
+    if (!r) return;
+    await refresh();
+    const bits = [];
+    if (r.added.length) bits.push(`Read ${plural(r.added.length, "finished video")}`);
+    if (r.cancelled) bits.push("Stopped before the rest were read; nothing already read was lost");
+    if (r.failed.length) {
+      await showError("Some finished videos could not be read", r.failed.map(([n, why]) => `${n}: ${why}`).join(" ") + " The others were read normally.");
+    }
+    if (bits.length) toast(`${icon("tick")} ${esc(bits.join(". "))}.`);
+  } catch (e) { showError("The finished videos were not added", String(e)); }
+}
+
+function settingRows(a, b) {
+  const rows = [
+    ["Focus at least", "focus_min", (v) => pct(v)],
+    ["Exposure at least", "exposure_min", (v) => pct(v)],
+    ["Stability at least", "stability_min", (v) => pct(v)],
+    ["Smoothing", "smoothing", (v) => (v === 0 ? "Off" : `${v} s`)],
+    ["Shortest select", "min_length", (v) => `${v} s`],
+    ["Selects per clip", "max_per_clip", (v) => (v === 0 ? "No limit" : String(v))],
+  ];
+  return rows.map(([name, k, f]) => {
+    const changed = a[k] !== b[k];
+    return `<tr class="${changed ? "changed" : ""}"><td>${name}</td><td class="num tabular">${f(a[k])}</td><td class="num tabular">${changed ? "<strong>" + f(b[k]) + "</strong>" : f(b[k])}</td></tr>`;
+  }).join("");
+}
+
+async function fitToEdits() {
+  toast(`<span class="spinner" aria-hidden="true"></span> Trying settings against your edits. This takes a few seconds.`);
+  let f;
+  try { f = await invoke("fit_to_finished_videos"); }
+  catch (e) { $("toast").hidden = true; showError("The settings could not be fitted", String(e)); return; }
+  $("toast").hidden = true;
+  const b = f.before, a = f.after;
+  const same = ["focus_min", "exposure_min", "stability_min", "smoothing", "min_length", "max_per_clip"].every((k) => f.settings[k] === state.selection[k]);
+  if (same) {
+    await modal("Your settings already fit your edits", `<p>No nearby settings keep more of the shots you used without making the selects much longer. They keep <strong class="num">${b.kept} of ${b.used}</strong> now.</p>`, [{ label: "Done", value: true, primary: true }]);
+    return;
+  }
+  let held;
+  if (f.held_out_kept_share != null) {
+    held = `<p>Checked on each finished video with settings learned from the others only: they kept <strong class="num">${Math.round(f.held_out_kept_share * 100)}%</strong> of that video's shots, against <span class="num">${Math.round(f.held_out_before_share * 100)}%</span> with your current settings.</p>`;
+  } else {
+    held = `<p class="muted">With one finished video, these settings could be tuned to that one edit. Add another and the fit is also checked on a video it has not seen.</p>`;
+  }
+  const body = `<p>Shots your edits used that are kept: <strong class="num">${b.kept} of ${b.used}</strong> now, <strong class="num">${a.kept} of ${a.used}</strong> with these settings. Selects in total: <span class="num">${fmtDur(b.selects_seconds)}</span> now, <span class="num">${fmtDur(a.selects_seconds)}</span> with these settings.</p>
+    <table class="fit-table"><thead><tr><th>Setting</th><th class="num">Now</th><th class="num">Fitted</th></tr></thead><tbody>${settingRows(state.selection, f.settings)}</tbody></table>
+    ${held}<p class="muted">Only the sliders move. You can change them by hand afterwards, and nothing is analyzed again.</p>`;
+  const go = await modal("Settings fitted to your edits", body, [
+    { label: "Keep my settings", value: false },
+    { label: "Use these settings", value: true, primary: true },
+  ]);
+  if (go) { localSel = { ...state.selection, ...f.settings }; pushSelection(); }
 }
 
 let selInFlight = false, selQueued = false;
@@ -518,8 +712,13 @@ function wireSliders() {
     input.addEventListener("pointerup", done);
     input.addEventListener("blur", done);
   }
+  $("keep-moves").addEventListener("change", (e) => {
+    if (!localSel) return;
+    localSel.keep_moves_whole = e.target.checked;
+    pushSelection();
+  });
   $("btn-reset").addEventListener("click", () => {
-    localSel = { focus_min: 0.5, exposure_min: 0.5, stability_min: 0.5, smoothing: 1, min_length: 2, max_length: 10, max_per_clip: 3 };
+    localSel = { focus_min: 0.5, exposure_min: 0.5, stability_min: 0.5, smoothing: 1, min_length: 2, max_length: 10, max_per_clip: 3, keep_moves_whole: true };
     pushSelection();
   });
 }
@@ -745,6 +944,14 @@ function wire() {
     if (act === "add-files") addFiles(false);
     else if (act === "add-folder") addFiles(true);
     else if (act === "back") { view = { mode: "list", clipId: null }; detail = null; renderMain(); }
+    else if (act === "add-finished") addFinished();
+    else if (act === "stop-tracing") invoke("stop_tracing");
+    else if (act === "fit") fitToEdits();
+    else if (act === "retrace") invoke("retrace_finished_videos").then((s) => { state = s; renderAll(); });
+    else if (act === "remove-finished") {
+      const path = e.target.closest("[data-path]").dataset.path;
+      invoke("remove_finished_video", { path }).then((s) => { state = s; renderAll(); });
+    }
     else {
       const tr = e.target.closest("tr[data-clip]");
       if (tr) openDetail(Number(tr.dataset.clip));
@@ -760,6 +967,17 @@ function wire() {
     scheduleRefresh(true);
   });
   $("sample-rate").addEventListener("change", changeSampleRate);
+  $("fallback-profile").addEventListener("change", async (e) => {
+    const v = e.target.value;
+    try { state = await invoke("set_fallback_profile", { profile: v === "auto" ? null : v }); renderAll(); if (view.mode === "detail") refreshDetail(); }
+    catch (err) { showError("The profile was not changed", String(err)); }
+  });
+  document.addEventListener("change", async (e) => {
+    if (e.target.id !== "clip-profile") return;
+    const v = e.target.value;
+    try { state = await invoke("set_clip_profile", { id: view.clipId, profile: v === "auto" ? null : v }); renderAll(); refreshDetail(); }
+    catch (err) { showError("The profile was not changed", String(err)); }
+  });
   $("btn-update").addEventListener("click", () => (update.phase === "available" ? installUpdate() : checkForUpdate(false)));
   $("auto-update").addEventListener("change", async (e) => {
     try { await invoke("set_check_updates_on_open", { on: e.target.checked }); }

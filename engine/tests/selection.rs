@@ -31,6 +31,79 @@ fn settings() -> SelectionSettings {
         min_length: 2.0,
         max_length: 10.0,
         max_per_clip: 0,
+        keep_moves_whole: false,
+    }
+}
+
+/// Like `series`, with camera speed (share of width per second) per second.
+fn series_moving(per_second: &[(f32, f32)]) -> ScoreSeries {
+    let mut s = ScoreSeries::default();
+    for (sec, &(q, speed)) in per_second.iter().enumerate() {
+        for k in 0..4 {
+            s.t.push(sec as f32 + k as f32 * 0.25);
+            s.focus.push(q);
+            s.exposure.push(q);
+            s.stability.push(q);
+            s.motion.push(speed);
+        }
+    }
+    s
+}
+
+const STILL: (f32, f32) = (0.9, 0.0);
+const PAN: (f32, f32) = (0.9, 0.12);
+
+#[test]
+fn a_camera_move_longer_than_the_maximum_is_kept_whole() {
+    // Still for 6 s, a 12 s pan, still for 7 s.
+    let mut v = vec![STILL; 6];
+    v.extend(vec![PAN; 12]);
+    v.extend(vec![STILL; 7]);
+    let s = series_moving(&v);
+    let mut st = settings();
+    st.keep_moves_whole = true;
+    let sel = select_clip(&s, 25.0, &st);
+    let k = kept(&sel);
+    let pan = k.iter().find(|(a, b)| *a <= 6.2 && *b >= 17.8);
+    assert!(pan.is_some(), "the pan should be one select: {k:?}");
+    let seg = sel.kept().find(|g| g.start <= 6.2 && g.end >= 17.8).unwrap();
+    assert!(seg.camera_move);
+    // Every other part respects the maximum.
+    for (a, b) in &k {
+        if (a, b) != (&pan.unwrap().0, &pan.unwrap().1) {
+            assert!(b - a <= 10.0 + 1e-9, "{k:?}");
+        }
+    }
+}
+
+#[test]
+fn without_keep_moves_whole_parts_stay_under_the_maximum_and_cut_where_the_camera_rests() {
+    // A 9 s pan, a 1 s pause, another 9 s pan.
+    let mut v = vec![PAN; 9];
+    v.push(STILL);
+    v.extend(vec![PAN; 9]);
+    let s = series_moving(&v);
+    let st = settings();
+    let sel = select_clip(&s, 19.0, &st);
+    let k = kept(&sel);
+    assert_eq!(k.len(), 2, "{k:?}");
+    for (a, b) in &k {
+        assert!(b - a <= 10.0 + 1e-9);
+    }
+    // The cut lands in the pause, between 9 and 10 s.
+    assert!(k[0].1 >= 8.9 && k[0].1 <= 10.1, "{k:?}");
+}
+
+#[test]
+fn a_still_shot_is_split_evenly_and_never_kept_over_the_maximum() {
+    let s = series_moving(&[STILL; 25]);
+    let mut st = settings();
+    st.keep_moves_whole = true;
+    let sel = select_clip(&s, 25.0, &st);
+    let k = kept(&sel);
+    assert_eq!(k.len(), 3, "{k:?}");
+    for (a, b) in &k {
+        assert!((b - a - 25.0 / 3.0).abs() < 0.3, "{k:?}");
     }
 }
 

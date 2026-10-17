@@ -22,6 +22,9 @@ fn main() {
             if let Some(w) = app.get_webview_window("main") {
                 let _ = w.set_title(selects_engine::PRODUCT_NAME);
             }
+            // New projects start with the profile chosen last time.
+            let fallback = commands::remembered_fallback(app.handle());
+            app.state::<AppState>().project.lock().unwrap().fallback_profile = fallback;
             // Paths passed on the command line (or by "Open with") are added on start.
             let paths: Vec<std::path::PathBuf> = std::env::args()
                 .skip(1)
@@ -55,6 +58,13 @@ fn main() {
             commands::export_timeline,
             commands::close_app,
             commands::tool_check,
+            commands::set_fallback_profile,
+            commands::set_clip_profile,
+            commands::add_finished_videos,
+            commands::stop_tracing,
+            commands::remove_finished_video,
+            commands::retrace_finished_videos,
+            commands::fit_to_finished_videos,
             updates::update_settings,
             updates::set_check_updates_on_open,
             updates::check_for_update,

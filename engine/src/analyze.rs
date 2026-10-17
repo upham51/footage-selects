@@ -9,7 +9,7 @@
 //! hardware decoding is requested where available with a software fallback.
 
 use crate::ffmpeg;
-use crate::metrics::{measure_frame, FrameMetrics, MotionFrame};
+use crate::metrics::{measure_frame, FrameMetrics, MotionFrame, LADDER_LEN};
 use crate::probe::{friendly_ffmpeg_error, ClipInfo};
 use serde::{Deserialize, Serialize};
 use std::io::Read;
@@ -18,7 +18,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 /// Bump when measurements change meaning, so cached results are redone.
-pub const ANALYSIS_VERSION: u32 = 2;
+pub const ANALYSIS_VERSION: u32 = 3;
 pub const DEFAULT_ANALYSIS_WIDTH: u32 = 480;
 pub const DEFAULT_SAMPLE_RATE: f64 = 4.0;
 
@@ -53,6 +53,17 @@ pub struct FrameTable {
     pub dx: Vec<f32>,
     pub dy: Vec<f32>,
     pub motion_ok: Vec<u8>,
+    /// Luma at the shares in `metrics::LADDER`.
+    #[serde(default)]
+    pub ladder: Vec<[u8; LADDER_LEN]>,
+    #[serde(default)]
+    pub vmax: Vec<u8>,
+    /// Share of pixels within one level of the brightest.
+    #[serde(default)]
+    pub top: Vec<f32>,
+    /// Picture fingerprints: whole frame, 2.39:1 centre and 9:16 centre.
+    #[serde(default)]
+    pub fp: Vec<[u64; 3]>,
 }
 
 fn round4(v: f32) -> f32 {
@@ -81,6 +92,14 @@ impl FrameTable {
         self.dx.push(round4(m.dx));
         self.dy.push(round4(m.dy));
         self.motion_ok.push(m.motion_ok as u8);
+        self.ladder.push(m.ladder);
+        self.vmax.push(m.vmax);
+        self.top.push(round4(m.top));
+        self.fp.push(m.fp);
+    }
+    /// True when the exposure ladder and fingerprints were measured (analysis version 3 and later).
+    pub fn has_ladder(&self) -> bool {
+        !self.lap.is_empty() && self.ladder.len() == self.lap.len()
     }
     pub fn get(&self, i: usize) -> FrameMetrics {
         FrameMetrics {
@@ -93,6 +112,10 @@ impl FrameTable {
             dx: self.dx[i],
             dy: self.dy[i],
             motion_ok: self.motion_ok[i] != 0,
+            ladder: self.ladder.get(i).copied().unwrap_or_default(),
+            vmax: self.vmax.get(i).copied().unwrap_or(0),
+            top: self.top.get(i).copied().unwrap_or(0.0),
+            fp: self.fp.get(i).copied().unwrap_or_default(),
         }
     }
     pub fn extend_from(&mut self, other: &FrameTable) {
@@ -106,6 +129,10 @@ impl FrameTable {
         self.dx.extend_from_slice(&other.dx);
         self.dy.extend_from_slice(&other.dy);
         self.motion_ok.extend_from_slice(&other.motion_ok);
+        self.ladder.extend_from_slice(&other.ladder);
+        self.vmax.extend_from_slice(&other.vmax);
+        self.top.extend_from_slice(&other.top);
+        self.fp.extend_from_slice(&other.fp);
     }
 }
 

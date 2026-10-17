@@ -37,6 +37,34 @@ pub struct FrameMetrics {
     pub dy: f32,
     /// False when the picture had too little texture to measure motion.
     pub motion_ok: bool,
+    /// Luma at each share in `LADDER`, 0 to 255. Tone curves are monotonic,
+    /// so these can be mapped through any log curve later without decoding again.
+    pub ladder: [u8; LADDER_LEN],
+    /// Brightest luma in the picture.
+    pub vmax: u8,
+    /// Share of pixels within one level of the brightest. Clipped highlights
+    /// pile up at one value wherever the camera's curve tops out, which for
+    /// log footage is well below 255.
+    pub top: f32,
+    /// Picture fingerprints for matching finished videos back to this clip.
+    pub fp: [u64; 3],
+}
+
+/// Shares of pixels at which `FrameMetrics::ladder` records the luma.
+pub const LADDER: [f32; LADDER_LEN] = [0.01, 0.02, 0.05, 0.10, 0.25, 0.50, 0.75, 0.90, 0.95, 0.98, 0.99];
+pub const LADDER_LEN: usize = 11;
+
+/// Everything the histogram gives us about one frame.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct ExposureStats {
+    pub mean: f32,
+    pub lo: f32,
+    pub hi: f32,
+    pub p2: f32,
+    pub p98: f32,
+    pub ladder: [u8; LADDER_LEN],
+    pub vmax: u8,
+    pub top: f32,
 }
 
 /// Variance of the 4-neighbour Laplacian over the interior of the picture.
@@ -69,8 +97,8 @@ pub fn laplacian_variance(gray: &[u8], w: usize, h: usize) -> f64 {
     (sum_sq as f64 / n - mean * mean).max(0.0)
 }
 
-/// Histogram-based exposure measurements: (mean, lo share, hi share, p2, p98).
-pub fn exposure_stats(gray: &[u8]) -> (f32, f32, f32, f32, f32) {
+/// Histogram-based exposure measurements.
+pub fn exposure_stats(gray: &[u8]) -> ExposureStats {
     let mut hist = [0u32; 256];
     for &v in gray {
         hist[v as usize] += 1;
@@ -82,24 +110,33 @@ pub fn exposure_stats(gray: &[u8]) -> (f32, f32, f32, f32, f32) {
     }
     let lo: u32 = hist[..=SHADOW_LEVEL as usize].iter().sum();
     let hi: u32 = hist[HIGHLIGHT_LEVEL as usize..].iter().sum();
-    let pct = |p: f64| -> f32 {
+    let pct = |p: f64| -> u8 {
         let target = p * n;
         let mut acc = 0f64;
         for (i, &c) in hist.iter().enumerate() {
             acc += c as f64;
             if acc >= target {
-                return i as f32;
+                return i as u8;
             }
         }
-        255.0
+        255
     };
-    (
-        (total as f64 / n) as f32,
-        (lo as f64 / n) as f32,
-        (hi as f64 / n) as f32,
-        pct(0.02),
-        pct(0.98),
-    )
+    let mut ladder = [0u8; LADDER_LEN];
+    for (k, &p) in LADDER.iter().enumerate() {
+        ladder[k] = pct(p as f64);
+    }
+    let vmax = hist.iter().rposition(|&c| c > 0).unwrap_or(0) as u8;
+    let near_top: u32 = hist[vmax.saturating_sub(1) as usize..=vmax as usize].iter().sum();
+    ExposureStats {
+        mean: (total as f64 / n) as f32,
+        lo: (lo as f64 / n) as f32,
+        hi: (hi as f64 / n) as f32,
+        p2: pct(0.02) as f32,
+        p98: pct(0.98) as f32,
+        ladder,
+        vmax,
+        top: (near_top as f64 / n) as f32,
+    }
 }
 
 /// A grayscale picture.
@@ -274,7 +311,7 @@ pub fn measure_frame(
     prev: Option<&MotionFrame>,
 ) -> (FrameMetrics, MotionFrame) {
     let lap = laplacian_variance(gray, w, h) as f32;
-    let (mean, lo, hi, p2, p98) = exposure_stats(gray);
+    let e = exposure_stats(gray);
     let proj = motion_frame(gray, w, h);
     let (dx, dy, motion_ok) = match prev {
         Some(p) => estimate_shift(p, &proj),
@@ -283,14 +320,18 @@ pub fn measure_frame(
     (
         FrameMetrics {
             lap,
-            mean,
-            lo,
-            hi,
-            p2,
-            p98,
+            mean: e.mean,
+            lo: e.lo,
+            hi: e.hi,
+            p2: e.p2,
+            p98: e.p98,
             dx,
             dy,
             motion_ok,
+            ladder: e.ladder,
+            vmax: e.vmax,
+            top: e.top,
+            fp: crate::fingerprint::frame_hashes(gray, w, h),
         },
         proj,
     )
@@ -345,11 +386,14 @@ mod tests {
         for v in g.iter_mut().skip(900) {
             *v = 0;
         }
-        let (_mean, lo, hi, p2, p98) = exposure_stats(&g);
-        assert!((lo - 0.1).abs() < 1e-6);
-        assert!((hi - 0.1).abs() < 1e-6);
-        assert_eq!(p2, 0.0);
-        assert_eq!(p98, 255.0);
+        let e = exposure_stats(&g);
+        assert!((e.lo - 0.1).abs() < 1e-6);
+        assert!((e.hi - 0.1).abs() < 1e-6);
+        assert_eq!(e.p2, 0.0);
+        assert_eq!(e.p98, 255.0);
+        assert_eq!(e.vmax, 255);
+        assert!((e.top - 0.1).abs() < 1e-6);
+        assert_eq!(e.ladder[5], 128);
     }
 
     #[test]
