@@ -1,0 +1,3 @@
+This file is replaced during each release build with the exact record of how the bundled
+ffmpeg was built: the FFmpeg source release, its checksum and the configure line.
+See scripts/build-ffmpeg.sh and THIRD_PARTY_LICENSES.

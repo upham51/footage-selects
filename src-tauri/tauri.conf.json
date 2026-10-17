@@ -11,7 +11,7 @@
     "windows": [
       {
         "label": "main",
-        "title": "Footage Selects",
+        "title": "",
         "width": 1360,
         "height": 880,
         "minWidth": 1040,
@@ -24,6 +24,18 @@
       "csp": "default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; script-src 'self'; connect-src ipc: http://ipc.localhost"
     }
   },
+  "plugins": {
+    "updater": {
+      "pubkey": "",
+      "endpoints": [
+        "https://github.com/upham51/footage-selects/releases/latest/download/latest.json"
+      ],
+      "requireSignedVersion": true,
+      "windows": {
+        "installMode": "passive"
+      }
+    }
+  },
   "bundle": {
     "active": true,
     "targets": [
@@ -33,8 +45,8 @@
     ],
     "category": "Video",
     "shortDescription": "Pulls selects from raw footage",
-    "longDescription": "Footage Selects scores every clip for focus, exposure and camera stability using classical image math, picks the best moments, and exports a timeline for DaVinci Resolve, Premiere Pro and Final Cut Pro. It works fully offline.",
-    "copyright": "Released under the MIT license. Includes FFmpeg (LGPL/GPL).",
+    "longDescription": "Scores every clip for focus, exposure and camera stability using classical image math, picks the best moments, and exports a timeline for DaVinci Resolve, Premiere Pro and Final Cut Pro. It works fully offline.",
+    "copyright": "Copyright 2026. All rights reserved. Includes FFmpeg under the GNU LGPL 2.1; see THIRD_PARTY_LICENSES.",
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
@@ -42,6 +54,10 @@
       "icons/icon.icns",
       "icons/icon.ico"
     ],
+    "resources": {
+      "../THIRD_PARTY_LICENSES": "THIRD_PARTY_LICENSES.txt",
+      "ffmpeg-build-info.txt": "ffmpeg-build-info.txt"
+    },
     "externalBin": [
       "binaries/ffmpeg",
       "binaries/ffprobe"

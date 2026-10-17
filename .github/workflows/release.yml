@@ -2,6 +2,8 @@ name: Release
 
 # Builds the installers. A tag starting with v (for example v0.1.0) also
 # attaches them to the GitHub release for that tag, creating it if needed.
+# Running it by hand from the Actions tab builds the installers without
+# publishing anything, which is useful for testing.
 on:
   push:
     tags: ["v*"]
@@ -11,8 +13,31 @@ permissions:
   contents: write
 
 jobs:
+  ffmpeg-windows:
+    name: Build ffmpeg for Windows (LGPL)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/cache@v4
+        id: cache
+        with:
+          path: ffmpeg-out
+          key: ffmpeg-windows-${{ hashFiles('scripts/build-ffmpeg.sh') }}
+      - name: Install the cross compiler
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: sudo apt-get update && sudo apt-get install -y gcc-mingw-w64-x86-64 nasm
+      - name: Build
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: scripts/build-ffmpeg.sh windows ffmpeg-out
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ffmpeg-windows
+          path: ffmpeg-out
+          if-no-files-found: error
+
   build:
     name: Build ${{ matrix.name }}
+    needs: ffmpeg-windows
     strategy:
       fail-fast: false
       matrix:
@@ -20,14 +45,21 @@ jobs:
           - name: macOS (Apple silicon)
             os: macos-14
             target: aarch64-apple-darwin
+            platform: darwin-aarch64
             bundles: app,dmg
             asset_suffix: mac-apple-silicon.dmg
           - name: Windows
             os: windows-latest
             target: x86_64-pc-windows-msvc
+            platform: windows-x86_64
             bundles: nsis
             asset_suffix: windows-setup.exe
     runs-on: ${{ matrix.os }}
+    env:
+      # Optional. Without these the app is built without self-updating.
+      TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+      TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+      UPDATER_PUBLIC_KEY: ${{ vars.UPDATER_PUBLIC_KEY }}
     steps:
       - uses: actions/checkout@v4
 
@@ -44,22 +76,46 @@ jobs:
         with:
           key: ${{ matrix.target }}
 
-      - name: Fetch ffmpeg (macOS)
+      - name: Build ffmpeg for macOS (LGPL), or reuse the last build
         if: runner.os == 'macOS'
-        run: scripts/fetch-ffmpeg-macos.sh
+        uses: actions/cache@v4
+        id: ffcache
+        with:
+          path: ffmpeg-out
+          key: ffmpeg-macos-arm64-${{ hashFiles('scripts/build-ffmpeg.sh') }}
+      - if: runner.os == 'macOS' && steps.ffcache.outputs.cache-hit != 'true'
+        run: scripts/build-ffmpeg.sh macos ffmpeg-out
 
-      - name: Fetch ffmpeg (Windows)
+      - name: Fetch the Windows ffmpeg built above
         if: runner.os == 'Windows'
-        shell: pwsh
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: scripts/fetch-ffmpeg-windows.ps1
+        uses: actions/download-artifact@v4
+        with:
+          name: ffmpeg-windows
+          path: ffmpeg-out
+
+      - name: Put ffmpeg where the app and the tests expect it
+        shell: bash
+        run: |
+          ext=""; [ "${{ runner.os }}" = "Windows" ] && ext=".exe"
+          mkdir -p src-tauri/binaries dev-bin
+          for tool in ffmpeg ffprobe; do
+            cp "ffmpeg-out/$tool$ext" "src-tauri/binaries/$tool-${{ matrix.target }}$ext"
+            cp "ffmpeg-out/$tool$ext" "dev-bin/$tool$ext"
+          done
+          chmod +x dev-bin/* src-tauri/binaries/* || true
+          cat ffmpeg-out/BUILD_INFO.txt
+          cp ffmpeg-out/BUILD_INFO.txt src-tauri/ffmpeg-build-info.txt
+          # Second license gate, on the finished program itself.
+          dev-bin/ffmpeg$ext -hide_banner -L | head -5
+          if dev-bin/ffmpeg$ext -hide_banner -buildconf | grep -E -- '--enable-(gpl|nonfree|version3)'; then
+            echo "This ffmpeg was built with GPL or non-free parts and must not ship."; exit 1
+          fi
+          dev-bin/ffmpeg$ext -hide_banner -hwaccels
 
       - name: Test the engine with the ffmpeg that ships
         shell: bash
         run: |
           export PATH="$PWD/dev-bin:$PATH"
-          which ffmpeg
           cargo test -p selects_engine --release
           # Show which decoding path this machine used.
           cargo test -p selects_engine --release --test analysis analysis_speed_is_reported -- --nocapture
@@ -68,38 +124,75 @@ jobs:
         run: npm ci
 
       - name: Build installer
-        run: npx tauri build --target ${{ matrix.target }} --bundles ${{ matrix.bundles }}
+        shell: bash
+        run: |
+          args=(--target ${{ matrix.target }} --bundles ${{ matrix.bundles }})
+          if [ -n "$TAURI_SIGNING_PRIVATE_KEY" ] && [ -n "$UPDATER_PUBLIC_KEY" ]; then
+            echo "Update signing is set up: building update files too."
+            args+=(--config '{"bundle":{"createUpdaterArtifacts":true}}')
+          else
+            echo "Update signing is not set up: this build cannot update itself."
+            unset UPDATER_PUBLIC_KEY
+          fi
+          npx tauri build "${args[@]}"
 
-      - name: Collect installer
+      - name: Collect installer and update files
         id: collect
         shell: bash
         run: |
           version=$(node -p "require('./src-tauri/tauri.conf.json').version")
+          name=$(node -p "require('./src-tauri/tauri.conf.json').productName.replace(/[^A-Za-z0-9]+/g, '-')")
+          b=target/${{ matrix.target }}/release/bundle
           mkdir -p dist
           if [ "${{ runner.os }}" = "macOS" ]; then
-            src=$(ls target/${{ matrix.target }}/release/bundle/dmg/*.dmg | head -1)
+            src=$(ls $b/dmg/*.dmg | head -1)
+            upd=$(ls $b/macos/*.app.tar.gz 2>/dev/null | head -1 || true)
+            upd_out="dist/$name-$version-mac-apple-silicon.app.tar.gz"
           else
-            src=$(ls target/${{ matrix.target }}/release/bundle/nsis/*-setup.exe | head -1)
+            src=$(ls $b/nsis/*-setup.exe | head -1)
+            upd="$src"
+            upd_out=""
           fi
-          out="dist/Footage-Selects-$version-${{ matrix.asset_suffix }}"
+          out="dist/$name-$version-${{ matrix.asset_suffix }}"
           cp "$src" "$out"
+          if [ -n "$TAURI_SIGNING_PRIVATE_KEY" ] && [ -n "$UPDATER_PUBLIC_KEY" ] && [ -n "$upd" ]; then
+            [ -n "$upd_out" ] && cp "$upd" "$upd_out" || upd_out="$out"
+            # Sign again with the version bound into the signature, which the app requires.
+            npx tauri signer sign --app-version "$version" "$upd_out"
+            echo "{\"platform\":\"${{ matrix.platform }}\",\"file\":\"$(basename "$upd_out")\",\"signature\":\"$(cat "$upd_out.sig")\"}" > "dist/update-${{ matrix.platform }}.json"
+            rm "$upd_out.sig"
+          fi
           ls -la dist
           echo "file=$out" >> "$GITHUB_OUTPUT"
 
       - uses: actions/upload-artifact@v4
         with:
           name: installer-${{ matrix.target }}
-          path: ${{ steps.collect.outputs.file }}
+          path: dist/*
           if-no-files-found: error
 
-      - name: Attach to the GitHub release
-        if: startsWith(github.ref, 'refs/tags/v')
-        shell: bash
+  publish:
+    name: Attach to the GitHub release
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Write the update manifest
+        run: node scripts/write-update-manifest.mjs dist "${{ github.ref_name }}" "${{ github.repository }}"
+      - name: Upload
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ github.ref_name }}
         run: |
+          name=$(node -p "require('./src-tauri/tauri.conf.json').productName")
+          rm -f dist/update-*.json
           gh release view "$TAG" > /dev/null 2>&1 || \
-            gh release create "$TAG" --title "Footage Selects $TAG" --notes-file .github/release-notes.md || \
+            gh release create "$TAG" --title "$name $TAG" --notes-file .github/release-notes.md || \
             gh release view "$TAG" > /dev/null
-          gh release upload "$TAG" "${{ steps.collect.outputs.file }}" --clobber
+          gh release upload "$TAG" dist/* --clobber
+          gh release view "$TAG" --json assets -q '.assets[].name'

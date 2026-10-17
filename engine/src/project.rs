@@ -172,11 +172,13 @@ impl std::fmt::Display for ProjectError {
             ProjectError::Read(e) => write!(f, "The project file could not be opened ({e}). Nothing in it was changed."),
             ProjectError::NotAProject => write!(
                 f,
-                "This file is not a Footage Selects project, or it was damaged. Nothing in it was changed."
+                "This file is not a {} project, or it was damaged. Nothing in it was changed.",
+                crate::PRODUCT_NAME
             ),
             ProjectError::TooNew(v) => write!(
                 f,
-                "This project was saved by a newer version of Footage Selects (format {v}). Update the app to open it. Nothing in it was changed."
+                "This project was saved by a newer version of {} (format {v}). Update the app to open it. Nothing in it was changed.",
+                crate::PRODUCT_NAME
             ),
             ProjectError::Write(e) => write!(
                 f,

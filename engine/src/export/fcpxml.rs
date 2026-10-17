@@ -187,7 +187,7 @@ pub fn write(tl: &Timeline) -> String {
     let tc_start = Time::frames(tl.start_frame, r);
     let total = Time::frames(tl.duration, r);
     x.open("library", &[]);
-    x.open("event", &[("name", "Footage Selects".into())]);
+    x.open("event", &[("name", crate::PRODUCT_NAME.into())]);
     x.open("project", &[("name", tl.name.clone())]);
     x.open(
         "sequence",

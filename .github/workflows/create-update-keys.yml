@@ -1,0 +1,50 @@
+name: Create update signing keys
+
+# Run once, by hand, from the Actions tab. It makes a new key pair for signing
+# app updates and offers it as a download that expires after one day. The keys
+# are never printed in the log and never committed. After copying them into
+# the repository settings, delete the download (or let it expire).
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  keys:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Generate
+        run: |
+          mkdir -p keys
+          npx tauri signer generate --ci -p "" -w keys/private.key > /dev/null
+          cat > keys/WHAT-TO-DO.txt <<'EOF'
+          Two values go into the repository settings on GitHub
+          (Settings, then Secrets and variables, then Actions).
+
+          1. Secrets tab, New repository secret
+             Name:  TAURI_SIGNING_PRIVATE_KEY
+             Value: the whole contents of private.key
+
+          2. Variables tab, New repository variable
+             Name:  UPDATER_PUBLIC_KEY
+             Value: the whole contents of private.key.pub
+
+          Then delete this download from the workflow run page.
+          Keep a copy of private.key somewhere safe and private, such as a
+          password manager: if it is lost, people with the app will have to
+          download the next version by hand once.
+          EOF
+          sed -i 's/^          //' keys/WHAT-TO-DO.txt
+          ls keys
+      - uses: actions/upload-artifact@v4
+        with:
+          name: update-signing-keys
+          path: keys
+          retention-days: 1

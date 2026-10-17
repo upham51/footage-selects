@@ -4,16 +4,24 @@
 mod commands;
 mod runner;
 mod state;
+mod updates;
 
 use state::{AppState, EVENT_CLOSE_REQUESTED, EVENT_DROP_HOVER};
 use std::sync::atomic::Ordering;
 use tauri::{DragDropEvent, Emitter, Manager, WindowEvent};
 
 fn main() {
-    tauri::Builder::default()
-        .plugin(tauri_plugin_dialog::init())
+    let mut builder = tauri::Builder::default().plugin(tauri_plugin_dialog::init());
+    if let Some(updater) = updates::plugin() {
+        builder = builder.plugin(updater);
+    }
+    builder
         .manage(AppState::default())
+        .manage(updates::Pending::default())
         .setup(|app| {
+            if let Some(w) = app.get_webview_window("main") {
+                let _ = w.set_title(selects_engine::PRODUCT_NAME);
+            }
             // Paths passed on the command line (or by "Open with") are added on start.
             let paths: Vec<std::path::PathBuf> = std::env::args()
                 .skip(1)
@@ -47,6 +55,10 @@ fn main() {
             commands::export_timeline,
             commands::close_app,
             commands::tool_check,
+            updates::update_settings,
+            updates::set_check_updates_on_open,
+            updates::check_for_update,
+            updates::install_update,
         ])
         .on_window_event(|window, event| match event {
             WindowEvent::DragDrop(DragDropEvent::Enter { .. }) | WindowEvent::DragDrop(DragDropEvent::Over { .. }) => {
@@ -73,5 +85,5 @@ fn main() {
             _ => {}
         })
         .run(tauri::generate_context!())
-        .expect("Footage Selects could not start");
+        .expect("the app could not start");
 }

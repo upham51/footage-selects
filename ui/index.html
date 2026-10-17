@@ -3,13 +3,13 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Footage Selects</title>
+  <title></title>
   <link rel="stylesheet" href="styles.css">
 </head>
 <body>
   <header class="topbar">
     <div class="brand">
-      <span class="wordmark">Footage Selects</span>
+      <span class="wordmark" data-product-name></span>
       <span class="project-line" id="project-line">New project</span>
     </div>
     <div class="topbar-actions">
@@ -100,6 +100,17 @@
         </fieldset>
         <button class="btn btn-primary btn-block" id="btn-export">Export timeline</button>
         <p class="hint" id="export-hint">Writes four files side by side: .xml for Premiere Pro and DaVinci Resolve, .fcpxml for Final Cut Pro, an .edl, and a .csv spreadsheet.</p>
+      </div>
+
+      <div class="side-section">
+        <h2 class="eyebrow">Updates</h2>
+        <p class="hint" id="version-line"></p>
+        <div id="update-status" aria-live="polite"></div>
+        <button class="btn btn-secondary btn-block" id="btn-update">Check for updates</button>
+        <label class="check">
+          <input type="checkbox" id="auto-update"> <span>Check when the app opens</span>
+        </label>
+        <p class="hint">A check asks GitHub whether a newer version exists. No footage, scores or project details are sent, and nothing else in the app uses the internet.</p>
       </div>
     </aside>
   </main>

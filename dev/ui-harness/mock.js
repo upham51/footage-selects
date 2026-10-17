@@ -71,12 +71,15 @@
       invoke: async (cmd, args) => {
         if (scene === "error" && cmd === "get_state") throw "The app's background process did not answer.";
         if (scene === "loading" && cmd === "get_state") return new Promise(() => {});
-        if (cmd === "tool_check") return { ok: true, version: "ffmpeg version 7.1" };
+        if (cmd === "tool_check") return { ok: true, version: "ffmpeg version 9.0.2", product_name: "Footage Selects", product_version: "0.1.0" };
+        if (cmd === "update_settings") return { configured: scene !== "noupdates", check_updates_on_open: false };
+        if (cmd === "check_for_update") { await new Promise((r) => setTimeout(r, 600)); if (scene === "error") throw "The app could not reach GitHub to check for a newer version. Nothing was changed. Check your internet connection and try again."; return { configured: true, current_version: "0.1.0", available: scene === "update" ? "0.2.0" : null, notes: null }; }
         if (cmd === "clip_detail") return detail(args.id);
         if (cmd === "set_selection") { Object.assign(sel, args.selection); return state; }
         return state;
       },
     },
+    window: { getCurrentWindow: () => ({ setTitle: () => {} }) },
     event: { listen: async (name, fn) => { (listeners[name] = listeners[name] || []).push(fn); return () => {}; } },
   };
   window.__mockEmit = (name, payload) => (listeners[name] || []).forEach((fn) => fn({ payload }));

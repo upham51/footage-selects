@@ -23,6 +23,8 @@ Go to the [latest release](https://github.com/upham51/footage-selects/releases/l
 1. Mac with Apple silicon (M1, M2, M3, M4 or later): the file ending in `mac-apple-silicon.dmg`
 2. Windows: the file ending in `windows-setup.exe`
 
+While this project's GitHub page is private, the download links only work when you are signed in to GitHub with access to it.
+
 Not sure which Mac you have? Open the Apple menu, choose About This Mac, and look at the line called Chip. If it starts with Apple, this download is for you.
 
 ## Install on a Mac
@@ -145,6 +147,18 @@ Each select has a marker named Select 1, Select 2 and so on, followed by how str
 
 The exported files also color the selects by strength: green for strong, blue for good, yellow for fair. How much of that color your editor shows depends on the editor. Final Cut Pro has no yellow markers, so there strong selects get a green completed to-do marker, good selects a blue marker, and fair selects a red to-do marker. In Premiere Pro the selects' clip labels are colored too.
 
+## Get new versions
+
+Under Updates, at the bottom of the panel on the right:
+
+1. Click Check for updates. The app asks GitHub whether a newer version exists.
+2. If one does, the button changes to Install version, followed by the number, and restart. Click it. If your project has been saved before, it is saved first; footage is never touched.
+3. The app downloads the new version, checks its signature, installs it and opens again.
+
+Tick Check when the app opens if you would like it to look every time it starts. This is off until you turn it on.
+
+A check sends GitHub a request for one small file that describes the newest version. No footage, scores or project details are sent. If the app says this copy cannot update itself, download the newest version from the release page instead, the same way you installed it.
+
 ## Tips
 
 1. Log or flat picture profiles (such as S-Log, V-Log or C-Log) look washed out until graded, so they score low on exposure. Lower the exposure slider for that footage.
@@ -154,13 +168,15 @@ The exported files also color the selects by strength: green for strong, blue fo
 
 ## Good to know
 
-1. Nothing leaves your computer. The app makes no network connections.
+1. Nothing leaves your computer. Analysis, selection and export make no network connections at all. The only time the app goes online is when you check for updates, as described above.
 2. Your footage is only read, never changed.
 3. Sound is not analyzed. In the exported timeline the full clips carry their sound; the selects above them are picture only, so you do not hear everything twice.
 4. Camera RAW formats such as Blackmagic RAW and RED R3D cannot be read. Use proxies or transcodes of that footage instead; Footage Selects handles proxies well.
 
 ## Credits
 
-Footage Selects is released under the MIT license. It includes FFmpeg (ffmpeg.org) to read video, which is licensed under the LGPL or GPL depending on the build; its source code is available from ffmpeg.org. It uses the Inter, Inter Tight and Averia Serif Libre typefaces under the SIL Open Font License.
+Footage Selects uses FFmpeg (ffmpeg.org) to read video. The copy inside the app is built from FFmpeg's own source under the GNU Lesser General Public License, version 2.1, with no parts under the GPL. It uses the Inter, Inter Tight and Averia Serif Libre typefaces under the SIL Open Font License. Every bundled library and its license is listed in [THIRD_PARTY_LICENSES](THIRD_PARTY_LICENSES), which is also inside the installed app.
+
+The app's name lives in one setting, `productName` in `src-tauri/tauri.conf.json`. The app, its installers and its exported timelines all read it from there. This README and the build plan mention the name in their text and would need updating by hand.
 
 People who want to build or change the app will find instructions in [DEVELOPMENT.md](DEVELOPMENT.md).

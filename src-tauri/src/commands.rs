@@ -296,8 +296,8 @@ pub async fn open_project(app: AppHandle) -> CmdResult<Option<StateDto>> {
     let Some(picked) = app
         .dialog()
         .file()
-        .set_title("Open a Footage Selects project")
-        .add_filter("Footage Selects project", &[PROJECT_EXTENSION])
+        .set_title(format!("Open a {} project", selects_engine::PRODUCT_NAME))
+        .add_filter(format!("{} project", selects_engine::PRODUCT_NAME), &[PROJECT_EXTENSION])
         .blocking_pick_file()
     else {
         return Ok(None);
@@ -323,7 +323,7 @@ fn save_to(app: &AppHandle, save_as: bool) -> CmdResult<Option<PathBuf>> {
                 .file()
                 .set_title("Save project")
                 .set_file_name(format!("Selects.{PROJECT_EXTENSION}"))
-                .add_filter("Footage Selects project", &[PROJECT_EXTENSION])
+                .add_filter(format!("{} project", selects_engine::PRODUCT_NAME), &[PROJECT_EXTENSION])
                 .blocking_save_file()
             else {
                 return Ok(None);
@@ -416,6 +416,8 @@ pub async fn close_app(app: AppHandle, save: bool) -> CmdResult<bool> {
 pub struct ToolCheck {
     pub ok: bool,
     pub version: Option<String>,
+    pub product_name: &'static str,
+    pub product_version: &'static str,
 }
 
 #[tauri::command]
@@ -424,5 +426,7 @@ pub async fn tool_check() -> ToolCheck {
     ToolCheck {
         ok: v.is_some(),
         version: v,
+        product_name: selects_engine::PRODUCT_NAME,
+        product_version: selects_engine::PRODUCT_VERSION,
     }
 }

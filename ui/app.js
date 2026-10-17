@@ -1,9 +1,14 @@
 "use strict";
-/* Footage Selects window. Talks to the Rust side through Tauri's global API. */
+/* The app window. Talks to the Rust side through Tauri's global API. */
 
 const tauri = window.__TAURI__;
 const invoke = (cmd, args) => tauri.core.invoke(cmd, args);
 const listen = (name, fn) => tauri.event.listen(name, fn);
+
+/* The product name comes from productName in src-tauri/tauri.conf.json, via tool_check. */
+let product = { name: "", version: "" };
+const appName = () => product.name || "the app";
+const AppName = () => product.name || "The app";
 
 /* ---------- small helpers ---------- */
 
@@ -88,7 +93,11 @@ function renderProjectLine() {
   if (state?.dirty) tail = ' <span class="unsaved">· Unsaved changes</span>';
   else if (state?.project_path) tail = " · Saved";
   $("project-line").innerHTML = name + tail;
-  document.title = `${state?.project_name || "New project"} · Footage Selects`;
+  const title = `${state?.project_name || "New project"} · ${appName()}`;
+  if (document.title !== title) {
+    document.title = title;
+    try { tauri.window.getCurrentWindow().setTitle(title); } catch (_) { /* title is cosmetic */ }
+  }
 }
 
 function renderSummary() {
@@ -158,7 +167,7 @@ function emptyHtml() {
   return `<div class="state"><div class="empty-drop">
     ${icon("down", "icon icon-lg")}
     <h1>Drag a folder or clips here</h1>
-    <p>Footage Selects reads every clip, scores focus, exposure and camera stability, and picks the best stretches. Nothing leaves your computer.</p>
+    <p>${esc(AppName())} reads every clip, scores focus, exposure and camera stability, and picks the best stretches. Nothing leaves your computer.</p>
     <div class="row">
       <button class="btn btn-primary" data-act="add-folder">${icon("folder")}Add a folder</button>
       <button class="btn btn-secondary" data-act="add-files">${icon("plus")}Add clips</button>
@@ -217,9 +226,9 @@ function listHtml() {
 function renderMain() {
   const panel = $("main-panel");
   if (view.mode === "detail") { renderDetail(); return; }
-  if (toolError) { panel.innerHTML = headerHtml() + errorHtml("The video tools could not start", toolError, "Nothing was analyzed. Reinstall Footage Selects from the download page, then open it again."); return; }
-  if (loadError) { panel.innerHTML = errorHtml("Footage Selects could not load its state", loadError, "Nothing was lost. Close the app and open it again."); return; }
-  if (state === null) { panel.innerHTML = loadingHtml("Opening Footage Selects"); return; }
+  if (toolError) { panel.innerHTML = headerHtml() + errorHtml("The video tools could not start", toolError, `Nothing was analyzed. Reinstall ${esc(appName())} from the download page, then open it again.`); return; }
+  if (loadError) { panel.innerHTML = errorHtml(`${esc(AppName())} could not load its state`, loadError, "Nothing was lost. Close the app and open it again."); return; }
+  if (state === null) { panel.innerHTML = loadingHtml(`Opening ${esc(appName())}`); return; }
   if (state.clips.length === 0) {
     panel.innerHTML = probe ? loadingHtml(probe.total ? `Reading clips: ${probe.done} of ${probe.total}` : "Looking for video files") : headerHtml() + emptyHtml();
     return;
@@ -640,6 +649,65 @@ async function changeSampleRate() {
   renderAll();
 }
 
+/* ---------- updates ---------- */
+
+let update = { phase: "idle", version: null, message: "" }; // idle | checking | current | available | installing | failed | off
+
+function renderUpdates() {
+  $("version-line").textContent = product.version ? `You have version ${product.version}.` : "";
+  const box = $("update-status"), btn = $("btn-update");
+  let html = "";
+  btn.disabled = update.phase === "checking" || update.phase === "installing" || update.phase === "off";
+  btn.innerHTML = "Check for updates";
+  if (update.phase === "checking") html = `<p class="update-line"><span class="spinner" aria-hidden="true"></span>Asking GitHub for the newest version</p>`;
+  else if (update.phase === "current") html = `<p class="update-line">${pill("green", "tick", "Up to date")} This is the newest version.</p>`;
+  else if (update.phase === "available") {
+    html = `<p class="update-line">${pill("amber", "clock", "Update ready")} Version ${esc(update.version)} is available. Your open project is saved first if it has a file; footage is never touched.</p>`;
+    btn.innerHTML = `Install version ${esc(update.version)} and restart`;
+  } else if (update.phase === "installing") html = `<p class="update-line"><span class="spinner" aria-hidden="true"></span>Downloading and installing version ${esc(update.version)}. The app restarts when it is done.</p>`;
+  else if (update.phase === "failed") html = `<div class="error-box error-small" role="alert">${icon("triangle")}<div><p>${esc(update.message)}</p></div></div>`;
+  else if (update.phase === "off") html = `<p class="update-line">${pill("grey", "dash", "Not available")} ${esc(update.message)}</p>`;
+  box.innerHTML = html;
+}
+
+async function checkForUpdate(quiet) {
+  update = { phase: "checking", version: null, message: "" }; renderUpdates();
+  try {
+    const r = await invoke("check_for_update");
+    update = r.available ? { phase: "available", version: r.available, message: "" } : { phase: quiet ? "idle" : "current", version: null, message: "" };
+  } catch (e) {
+    update = quiet ? { phase: "idle", version: null, message: "" } : { phase: "failed", version: null, message: String(e) };
+  }
+  renderUpdates();
+}
+
+async function installUpdate() {
+  if (state?.dirty && state?.project_path) {
+    try { await invoke("save_project", { saveAs: false }); } catch (e) { showError("The project was not saved, so the update did not start", String(e)); return; }
+  } else if (state?.dirty) {
+    const c = await modal("Install the update without saving?", "<p>This project has never been saved, so its scores will be lost when the app restarts. The footage itself is never changed.</p>", [
+      { label: "Keep working", value: "cancel" },
+      { label: "Install and lose unsaved scores", value: "go", primary: true },
+    ]);
+    if (c !== "go") return;
+  }
+  update = { ...update, phase: "installing" }; renderUpdates();
+  try { await invoke("install_update"); }
+  catch (e) { update = { phase: "failed", version: null, message: String(e) }; renderUpdates(); }
+}
+
+async function startUpdates() {
+  try {
+    const s = await invoke("update_settings");
+    $("auto-update").checked = s.check_updates_on_open;
+    if (!s.configured) {
+      update = { phase: "off", version: null, message: "This copy cannot update itself. Download newer versions from the release page." };
+      $("auto-update").disabled = true;
+    } else if (s.check_updates_on_open) { renderUpdates(); checkForUpdate(true); return; }
+  } catch (_) { /* updates are optional; the rest of the app carries on */ }
+  renderUpdates();
+}
+
 /* ---------- refresh ---------- */
 
 function renderAllButSide() { renderProjectLine(); renderSummary(); if (view.mode === "list") renderMain(); }
@@ -692,6 +760,11 @@ function wire() {
     scheduleRefresh(true);
   });
   $("sample-rate").addEventListener("change", changeSampleRate);
+  $("btn-update").addEventListener("click", () => (update.phase === "available" ? installUpdate() : checkForUpdate(false)));
+  $("auto-update").addEventListener("change", async (e) => {
+    try { await invoke("set_check_updates_on_open", { on: e.target.checked }); }
+    catch (err) { e.target.checked = !e.target.checked; showError("The setting was not changed", String(err)); }
+  });
   $("timeline-rate").addEventListener("change", () => pushExport(true));
   $("drop-frame").addEventListener("change", () => pushExport(false));
   for (const r of document.querySelectorAll('input[name="layout"]')) r.addEventListener("change", () => pushExport(false));
@@ -716,7 +789,7 @@ function wire() {
   listen("add-result", (e) => {
     const r = e.payload;
     probe = null;
-    if (r.found === 0) { toast(`${icon("dash")} No video files were found there. Footage Selects looks for .mov, .mp4, .mxf, .mts and similar files, including inside subfolders.`); return; }
+    if (r.found === 0) { toast(`${icon("dash")} No video files were found there. ${esc(AppName())} looks for .mov, .mp4, .mxf, .mts and similar files, including inside subfolders.`); return; }
     const bits = [`Added ${plural(r.added, "clip")}`];
     if (r.already_there) bits.push(`${r.already_there} ${r.already_there === 1 ? "was" : "were"} already in the project`);
     if (r.unreadable) bits.push(`${plural(r.unreadable, "file")} could not be read as video and ${r.unreadable === 1 ? "is" : "are"} listed with the reason`);
@@ -739,9 +812,12 @@ async function start() {
   wire();
   try {
     const t = await invoke("tool_check");
+    product = { name: t.product_name || "", version: t.product_version || "" };
+    document.querySelectorAll("[data-product-name]").forEach((el) => { el.textContent = product.name; });
     if (!t.ok) toolError = "The video reader that ships with the app (ffmpeg) did not start.";
   } catch (_) { /* reported by get_state below if the bridge is down */ }
   await refresh();
+  startUpdates();
 }
 
 start();

@@ -14,6 +14,8 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - name: Install ffmpeg
+        # Ubuntu's ffmpeg is used only to make and read test clips here; the
+        # app ships its own LGPL build (scripts/build-ffmpeg.sh).
         run: sudo apt-get update && sudo apt-get install -y ffmpeg
       - name: Run engine tests
         run: cargo test -p selects_engine --release
@@ -32,7 +34,14 @@ jobs:
           T=$(rustc -vV | sed -n 's/host: //p')
           mkdir -p src-tauri/binaries
           touch src-tauri/binaries/ffmpeg-$T src-tauri/binaries/ffprobe-$T
-      - name: Check the app builds
-        run: cargo check -p footage-selects
+      - name: Check the app builds and its tests pass
+        run: cargo test -p footage-selects
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
       - name: Check the window script parses
         run: node --check ui/app.js
+      - name: Check THIRD_PARTY_LICENSES is current and nothing needs a license review
+        run: node scripts/third-party-licenses.mjs --check
+      - name: Test the release scripts
+        run: node --test scripts/write-update-manifest.test.mjs

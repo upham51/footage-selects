@@ -342,3 +342,8 @@ td.num, th.num { text-align: right; }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { transition: none !important; animation: none !important; }
 }
+
+/* Updates */
+.update-line { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; font-size: 13px; line-height: 1.5; margin: 4px 0 10px; }
+.update-line .spinner { width: 13px; height: 13px; }
+.error-box.error-small { max-width: none; padding: 10px 12px; font-size: 13px; margin: 4px 0 10px; }
