@@ -255,10 +255,12 @@ pub fn parse_probe(json: &Value, path: &Path, size: u64, modified: u64) -> Resul
         .and_then(Rate::parse_ratio);
     let (rate, avg, vfr) = choose_rate(r_fps, avg_fps);
 
-    let duration = format
+    // The picture's own duration: a container's can be longer when audio runs past the last frame.
+    let duration = video
         .get("duration")
         .and_then(num)
-        .or_else(|| video.get("duration").and_then(num))
+        .filter(|d| *d > 0.0)
+        .or_else(|| format.get("duration").and_then(num))
         .unwrap_or(0.0);
     let start_time = video
         .get("start_time")
