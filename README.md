@@ -25,8 +25,6 @@ Once a version is published, go to the [releases page](https://github.com/upham5
 1. Mac with Apple silicon (M1, M2, M3, M4 or later): the file ending in `mac-apple-silicon.dmg`
 2. Windows: the file ending in `windows-setup.exe`
 
-While this project's GitHub page is private, the download links only work when you are signed in to GitHub with access to it.
-
 Not sure which Mac you have? Open the Apple menu, choose About This Mac, and look at the line called Chip. If it starts with Apple, this download is for you.
 
 ## Install on a Mac
