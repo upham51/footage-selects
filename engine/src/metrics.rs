@@ -213,17 +213,30 @@ pub fn shifted_difference(prev: &Plane, cur: &Plane, sx: i32, sy: i32, step: usi
         let cr = &cur.px[y * wu + x0..y * wu + x1];
         let start = (x0 as i32 - sx) as usize;
         let pr = &prev.px[py * wu + start..py * wu + start + (x1 - x0)];
-        let mut row: u32 = 0;
-        for (a, b) in cr.iter().zip(pr.iter()).step_by(step) {
-            row += (*a as i32 - *b as i32).unsigned_abs();
-        }
-        acc += row as u64;
+        acc += row_difference(cr, pr, step) as u64;
         n += ((x1 - x0 + step - 1) / step) as u64;
     }
     if n == 0 {
         f32::MAX
     } else {
         acc as f32 / n as f32
+    }
+}
+
+/// Sum of absolute differences of every `step`th pixel of two rows. Written
+/// so the compiler can use vector instructions; the sum is exact either way.
+fn row_difference(a: &[u8], b: &[u8], step: usize) -> u32 {
+    match step {
+        1 => a.iter().zip(b).map(|(x, y)| x.abs_diff(*y) as u32).sum(),
+        2 => {
+            let pairs = a.chunks_exact(2).zip(b.chunks_exact(2));
+            let tail = match (a.len() % 2, a.last(), b.last()) {
+                (1, Some(x), Some(y)) => x.abs_diff(*y) as u32,
+                _ => 0,
+            };
+            pairs.map(|(x, y)| x[0].abs_diff(y[0]) as u32).sum::<u32>() + tail
+        }
+        _ => a.iter().zip(b).step_by(step).map(|(x, y)| x.abs_diff(*y) as u32).sum(),
     }
 }
 
@@ -419,5 +432,27 @@ mod tests {
         assert!(ok);
         assert!((dx - 6.0).abs() < 0.75, "dx {dx}");
         assert!((dy + 3.0).abs() < 0.75, "dy {dy}");
+    }
+
+    #[test]
+    fn row_difference_matches_the_plain_sum() {
+        let mut seed: u32 = 99;
+        for len in [0usize, 1, 2, 3, 7, 60, 479, 480] {
+            let mut next = || {
+                seed = seed.wrapping_mul(1_103_515_245).wrapping_add(12_345);
+                (seed >> 16) as u8
+            };
+            let a: Vec<u8> = (0..len).map(|_| next()).collect();
+            let b: Vec<u8> = (0..len).map(|_| next()).collect();
+            for step in 1..=3 {
+                let plain: u32 = a
+                    .iter()
+                    .zip(&b)
+                    .step_by(step)
+                    .map(|(x, y)| (*x as i32 - *y as i32).unsigned_abs())
+                    .sum();
+                assert_eq!(row_difference(&a, &b, step), plain, "len {len} step {step}");
+            }
+        }
     }
 }

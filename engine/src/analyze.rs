@@ -212,10 +212,80 @@ pub enum Decoder {
 impl Decoder {
     pub fn label(self) -> &'static str {
         match self {
-            Decoder::GpuScaled => "hardware, downsized on the GPU",
-            Decoder::Hardware => "hardware when available",
-            Decoder::Software => "software",
+            Decoder::GpuScaled => DECODED_GPU,
+            Decoder::Hardware => DECODED_HARDWARE,
+            Decoder::Software => DECODED_SOFTWARE,
         }
+    }
+}
+
+/// What `ClipAnalysis::decoder` says, so the clip view can tell people how
+/// their footage was read.
+pub const DECODED_GPU: &str = "hardware, downsized on the GPU";
+pub const DECODED_HARDWARE: &str = "hardware";
+pub const DECODED_SOFTWARE: &str = "software";
+pub const DECODED_SOFTWARE_FALLBACK: &str = "software, because hardware decoding was not available for this clip";
+
+/// The pixel format VideoToolbox hands decoded frames back in, so the GPU
+/// path can download them. This mirrors ffmpeg's own choice
+/// (`videotoolbox_best_pixel_format` in libavcodec/videotoolbox.c): 4:2:2 and
+/// 4:4:4 footage and anything over 10 bits come back in their own formats,
+/// not the 4:2:0 ones. None for formats with no such mapping (alpha, RGB,
+/// unusual chroma), which skip straight to the next decoder.
+pub fn videotoolbox_download_format(pix_fmt: &str) -> Option<&'static str> {
+    if pix_fmt.is_empty() {
+        // Projects saved before the format was recorded: the common case.
+        return Some("nv12");
+    }
+    let f = pix_fmt.strip_prefix("yuvj").map(|r| format!("yuv{r}")).unwrap_or_else(|| pix_fmt.to_string());
+    let rest = f.strip_prefix("yuv")?;
+    let (chroma, tail) = rest.split_at(rest.len().min(3));
+    let tail = tail.strip_prefix('p')?;
+    let depth: u32 = match tail.trim_end_matches("le").trim_end_matches("be") {
+        "" => 8,
+        d => d.parse().ok()?,
+    };
+    Some(match (chroma, depth) {
+        ("444", d) if d > 10 => "p416le",
+        ("420" | "422", d) if d > 10 => "p216le",
+        ("444", d) if d > 8 => "p410le",
+        ("444", _) => "nv24",
+        ("422", d) if d > 8 => "p210le",
+        ("422", _) => "nv16",
+        ("420", d) if d > 8 => "p010le",
+        ("420", _) => "nv12",
+        _ => return None,
+    })
+}
+
+/// The filter that turns a frame the way ffmpeg's automatic rotation would,
+/// for the GPU path, which has to switch that off and rotate small frames itself.
+pub fn rotation_filter(rotation: i32) -> Option<&'static str> {
+    match rotation {
+        90 => Some("transpose=clock"),
+        180 => Some("hflip,vflip"),
+        270 => Some("transpose=cclock"),
+        _ => None,
+    }
+}
+
+/// Formats hardware decoders copy frames back to memory in. Software decoders
+/// give planar formats (yuv420p and so on) instead, which is how the app
+/// tells whether hardware decoding really happened.
+fn is_hardware_download_format(f: &str) -> bool {
+    matches!(f, "nv12" | "nv16" | "nv24" | "p010le" | "p210le" | "p410le" | "p216le" | "p416le" | "videotoolbox_vld" | "d3d11" | "dxva2_vld")
+}
+
+/// The label for what actually ran, given the pixel format ffmpeg reported
+/// for frames entering the filters.
+pub fn decoder_used(decoder: Decoder, clip_pix_fmt: &str, filter_input: Option<&str>) -> &'static str {
+    match decoder {
+        Decoder::GpuScaled => DECODED_GPU,
+        Decoder::Software => DECODED_SOFTWARE,
+        Decoder::Hardware => match filter_input {
+            Some(f) if f != clip_pix_fmt && is_hardware_download_format(f) => DECODED_HARDWARE,
+            _ => DECODED_SOFTWARE_FALLBACK,
+        },
     }
 }
 
@@ -231,8 +301,7 @@ fn hwaccel_name() -> &'static str {
 pub fn decoder_order(info: &ClipInfo, hardware: bool) -> Vec<Decoder> {
     let mut v = Vec::new();
     if hardware {
-        // Rotated clips need a rotation filter that runs on ordinary frames.
-        if cfg!(target_os = "macos") && info.rotation == 0 {
+        if cfg!(target_os = "macos") && videotoolbox_download_format(&info.pix_fmt).is_some() {
             v.push(Decoder::GpuScaled);
         }
         v.push(Decoder::Hardware);
@@ -295,30 +364,25 @@ pub fn analyze_clip(
     Err(last_err)
 }
 
-fn run_decoder(
-    info: &ClipInfo,
-    opts: &AnalyzeOptions,
-    decoder: Decoder,
-    cancel: &AtomicBool,
-    on_progress: &mut dyn FnMut(&FrameTable),
-) -> Result<ClipAnalysis, AnalyzeError> {
+/// The ffmpeg command that decodes `info` with `decoder` and writes small
+/// gray frames to stdout, one `showinfo` line per frame on stderr.
+pub fn decoder_command(info: &ClipInfo, opts: &AnalyzeOptions, decoder: Decoder) -> std::process::Command {
     let (w, h) = analysis_size(info, opts.width);
     let r = opts.sample_rate;
     let select = format!("select='isnan(prev_selected_t)+gt(floor(t*{r}),floor(prev_selected_t*{r}))'");
     let filter = match decoder {
-        Decoder::GpuScaled => {
-            // Frames stay on the GPU until they are small; the download format
-            // must match the decoder's, which is 10-bit for 10 and 12-bit footage.
-            let sw = if info.pix_fmt.contains("10") || info.pix_fmt.contains("12") { "p010le" } else { "nv12" };
-            format!("{select},scale_vt=w={w}:h={h},hwdownload,format={sw},format=gray,showinfo")
-        }
+        Decoder::GpuScaled => gpu_filter(info, &select, w, h, "scale_vt=w={w}:h={h},hwdownload,format={dl}"),
         _ => format!("{select},scale={w}:{h}:flags=area,format=gray,showinfo"),
     };
     let mut cmd = ffmpeg::command("ffmpeg");
-    cmd.args(["-hide_banner", "-nostdin", "-nostats", "-loglevel", "info"]);
+    // Verbose so ffmpeg reports the pixel format frames arrive in, which says
+    // whether hardware decoding really ran (see `decoder_used`).
+    cmd.args(["-hide_banner", "-nostdin", "-nostats", "-loglevel", "verbose"]);
     match decoder {
         Decoder::GpuScaled => {
             cmd.args(["-hwaccel", "videotoolbox", "-hwaccel_output_format", "videotoolbox_vld"]);
+            // ffmpeg's automatic rotation cannot run on GPU frames; small frames are turned after download.
+            cmd.arg("-noautorotate");
         }
         Decoder::Hardware => {
             cmd.args(["-hwaccel", hwaccel_name()]);
@@ -330,7 +394,55 @@ fn run_decoder(
     cmd.args(["-map", "0:v:0", "-an", "-sn", "-dn", "-vf", &filter]);
     cmd.args(["-fps_mode", "passthrough", "-f", "rawvideo", "-pix_fmt", "gray", "pipe:1"]);
     cmd.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
-    let mut child = cmd
+    cmd
+}
+
+/// The GPU path's filters: pick frames, downsize on the GPU (`scale`, with
+/// `{w}`, `{h}` and `{dl}` filled in), convert to gray and rotate the small
+/// frame. Rotated clips are downsized to the unrotated size first.
+pub fn gpu_filter(info: &ClipInfo, select: &str, w: u32, h: u32, scale: &str) -> String {
+    let (sw, sh) = if info.rotation == 90 || info.rotation == 270 { (h, w) } else { (w, h) };
+    let dl = videotoolbox_download_format(&info.pix_fmt).unwrap_or("nv12");
+    let scale = scale.replace("{w}", &sw.to_string()).replace("{h}", &sh.to_string()).replace("{dl}", dl);
+    match rotation_filter(info.rotation) {
+        Some(rot) => format!("{select},{scale},format=gray,{rot},showinfo"),
+        None => format!("{select},{scale},format=gray,showinfo"),
+    }
+}
+
+/// Only the ffmpeg side of analysis: every sampled frame's pixels, and the
+/// decoder that produced them. Used to time decoding on its own.
+pub fn decoded_frames(info: &ClipInfo, opts: &AnalyzeOptions) -> Result<(Vec<Vec<u8>>, Decoder), AnalyzeError> {
+    let (w, h) = analysis_size(info, opts.width);
+    for dec in decoder_order(info, opts.hardware_decode) {
+        let mut child = decoder_command(info, opts, dec)
+            .stderr(Stdio::null())
+            .spawn()
+            .map_err(|e| AnalyzeError::ToolMissing(e.to_string()))?;
+        let mut stdout = child.stdout.take().expect("stdout piped");
+        let mut frames = Vec::new();
+        let mut buf = vec![0u8; (w * h) as usize];
+        while let Ok(true) = read_full(&mut stdout, &mut buf) {
+            frames.push(buf.clone());
+        }
+        let _ = child.wait();
+        if !frames.is_empty() {
+            return Ok((frames, dec));
+        }
+    }
+    Err(AnalyzeError::Decode("No frames came out of the decoder.".into()))
+}
+
+fn run_decoder(
+    info: &ClipInfo,
+    opts: &AnalyzeOptions,
+    decoder: Decoder,
+    cancel: &AtomicBool,
+    on_progress: &mut dyn FnMut(&FrameTable),
+) -> Result<ClipAnalysis, AnalyzeError> {
+    let (w, h) = analysis_size(info, opts.width);
+    let r = opts.sample_rate;
+    let mut child = decoder_command(info, opts, decoder)
         .spawn()
         .map_err(|e| AnalyzeError::ToolMissing(e.to_string()))?;
 
@@ -338,6 +450,8 @@ fn run_decoder(
     let stderr_lines: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
     let stderr = child.stderr.take().expect("stderr piped");
     let lines = stderr_lines.clone();
+    let filter_input: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
+    let input_fmt = filter_input.clone();
     let (pts_tx, pts_rx) = std::sync::mpsc::channel::<f64>();
     let err_thread = std::thread::spawn(move || {
         use std::io::BufRead;
@@ -349,6 +463,10 @@ fn run_decoder(
                 let end = rest.find(|c: char| c.is_whitespace()).unwrap_or(rest.len());
                 if let Ok(v) = rest[..end].parse::<f64>() {
                     let _ = pts_tx.send(v);
+                }
+            } else if line.contains("input from stream") && line.contains("pixfmt:") {
+                if let Some(f) = line.split("pixfmt:").nth(1).and_then(|r| r.split_whitespace().next()) {
+                    *input_fmt.lock().unwrap() = Some(f.to_string());
                 }
             } else if !line.contains("Parsed_showinfo") && !line.starts_with(' ') {
                 let mut l = lines.lock().unwrap();
@@ -366,6 +484,7 @@ fn run_decoder(
     let mut prev: Option<MotionFrame> = None;
     let mut analysis = ClipAnalysis::empty(opts.sample_rate, w, h);
     analysis.decoder = decoder.label().into();
+    let decoder_kind = decoder;
     let mut pending = FrameTable::default();
     let mut cancelled = false;
     let mut last_t: Option<f64> = None;
@@ -424,6 +543,7 @@ fn run_decoder(
     // A decoder that exits with an error after producing most of the clip
     // (common with truncated camera files) still gives usable scores.
     analysis.complete = true;
+    analysis.decoder = decoder_used(decoder_kind, &info.pix_fmt, filter_input.lock().unwrap().as_deref()).into();
     Ok(analysis)
 }
 
@@ -438,4 +558,46 @@ fn read_full(r: &mut impl Read, buf: &mut [u8]) -> std::io::Result<bool> {
         filled += n;
     }
     Ok(true)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn gpu_download_format_follows_ffmpeg() {
+        let cases = [
+            ("yuv420p", Some("nv12")),
+            ("yuvj420p", Some("nv12")),
+            ("yuv420p10le", Some("p010le")),
+            ("yuv422p", Some("nv16")),
+            ("yuv422p10le", Some("p210le")),
+            ("yuv444p", Some("nv24")),
+            ("yuv444p10le", Some("p410le")),
+            ("yuv420p12le", Some("p216le")),
+            ("yuv422p12le", Some("p216le")),
+            ("yuv444p12le", Some("p416le")),
+            ("", Some("nv12")),
+            ("yuva420p", None),
+            ("yuva444p12le", None),
+            ("gbrp10le", None),
+            ("rgb24", None),
+            ("yuv411p", None),
+            ("gray", None),
+        ];
+        for (f, want) in cases {
+            assert_eq!(videotoolbox_download_format(f), want, "{f}");
+        }
+    }
+
+    #[test]
+    fn decoder_label_says_what_really_ran() {
+        assert_eq!(decoder_used(Decoder::Hardware, "yuv420p", Some("nv12")), DECODED_HARDWARE);
+        assert_eq!(decoder_used(Decoder::Hardware, "yuv420p10le", Some("p010le")), DECODED_HARDWARE);
+        assert_eq!(decoder_used(Decoder::Hardware, "yuv420p", Some("yuv420p")), DECODED_SOFTWARE_FALLBACK);
+        assert_eq!(decoder_used(Decoder::Hardware, "yuv422p10le", Some("yuv422p10le")), DECODED_SOFTWARE_FALLBACK);
+        assert_eq!(decoder_used(Decoder::Hardware, "yuv420p", None), DECODED_SOFTWARE_FALLBACK);
+        assert_eq!(decoder_used(Decoder::Software, "yuv420p", Some("yuv420p")), DECODED_SOFTWARE);
+        assert_eq!(decoder_used(Decoder::GpuScaled, "yuv420p", Some("videotoolbox_vld")), DECODED_GPU);
+    }
 }

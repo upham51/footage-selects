@@ -151,3 +151,59 @@ fn analysis_speed_is_reported() {
     }
     assert!(a.elapsed > 0.0);
 }
+
+/// The GPU path turns off ffmpeg's own rotation and turns the small frame
+/// itself. With ordinary filters standing in for the GPU ones, the result
+/// must match what ffmpeg's automatic rotation gives.
+#[test]
+fn gpu_path_rotation_matches_automatic_rotation() {
+    let f = common::footage();
+    // The fixture is one way round; a copy with the opposite rotation covers the other.
+    let other = common::fixtures_dir().join("rotated_other_way.mp4");
+    if !other.exists() {
+        let ok = std::process::Command::new("ffmpeg")
+            .args(["-hide_banner", "-v", "error", "-y", "-display_rotation", "-90", "-i"])
+            .arg(&f.rotated)
+            .args(["-c", "copy"])
+            .arg(&other)
+            .status()
+            .unwrap();
+        assert!(ok.success());
+    }
+    let mut seen = Vec::new();
+    for clip in [f.rotated.clone(), other] {
+        seen.push(rotation_matches(&clip));
+    }
+    seen.sort();
+    assert_eq!(seen, vec![90, 270], "both directions are tested");
+}
+
+fn rotation_matches(clip: &std::path::Path) -> i32 {
+    use selects_engine::analyze::{analysis_size, gpu_filter};
+    let info = probe(clip).unwrap();
+    let (w, h) = analysis_size(&info, 480);
+    assert!(h > w, "rotated clip should be taller than wide: {w}x{h}");
+    let select = "select='isnan(prev_selected_t)+gt(floor(t*4),floor(prev_selected_t*4))'";
+    let ours = gpu_filter(&info, select, w, h, "scale={w}:{h}:flags=area").replace(",showinfo", "");
+    let auto = format!("{select},scale={w}:{h}:flags=area,format=gray");
+    let frames = |extra: &[&str], vf: &str| -> Vec<u8> {
+        let out = std::process::Command::new("ffmpeg")
+            .args(["-hide_banner", "-v", "error"])
+            .args(extra)
+            .arg("-i")
+            .arg(clip)
+            .args(["-vf", vf, "-fps_mode", "passthrough", "-f", "rawvideo", "-pix_fmt", "gray", "-"])
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+        out.stdout
+    };
+    let a = frames(&["-noautorotate"], &ours);
+    let b = frames(&[], &auto);
+    assert_eq!(a.len(), b.len(), "same number and size of frames");
+    assert!(!a.is_empty());
+    let diff: u64 = a.iter().zip(&b).map(|(x, y)| x.abs_diff(*y) as u64).sum();
+    let mean = diff as f64 / a.len() as f64;
+    assert!(mean < 1.5, "rotation {}: frames differ by {mean:.2} levels on average; it is the wrong way round", info.rotation);
+    info.rotation
+}

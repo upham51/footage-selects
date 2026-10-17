@@ -1,0 +1,65 @@
+name: Speed check (Apple silicon)
+
+# Run by hand from the Actions tab. Times analysis of synthetic 4K clips on
+# GitHub's Apple silicon machine with the ffmpeg that ships, before (v0.1.0)
+# and after, and reports which decoder each clip used. GitHub's Macs are
+# virtual machines with 3 cores, so absolute speeds are lower than a real
+# MacBook Pro; compare the rows with each other.
+on:
+  workflow_dispatch:
+    inputs:
+      before:
+        description: Version to compare against
+        default: v0.1.0
+
+jobs:
+  speed:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Build ffmpeg for macOS (LGPL), or reuse the last build
+        uses: actions/cache@v4
+        id: ffcache
+        with:
+          path: ffmpeg-out
+          key: ffmpeg-macos-arm64-${{ hashFiles('scripts/build-ffmpeg.sh') }}
+      - if: steps.ffcache.outputs.cache-hit != 'true'
+        run: scripts/build-ffmpeg.sh macos ffmpeg-out
+      - name: Machine
+        run: |
+          sysctl -n machdep.cpu.brand_string hw.ncpu hw.memsize
+          ffmpeg-out/ffmpeg -hide_banner -hwaccels
+          ffmpeg-out/ffmpeg -hide_banner -filters | grep -E "scale_vt|hwdownload" || true
+      - name: Encoder for the test clips (not shipped)
+        run: brew install ffmpeg
+      - name: Make 4K test clips
+        run: dev/speed-clips.sh clips 5 /opt/homebrew/bin/ffmpeg
+      - name: Build the engine tools, now and before
+        run: |
+          cargo build --release -p selects_engine --examples
+          git worktree add before "${{ inputs.before }}"
+          (cd before && cargo build --release -p selects_engine --example bench --target-dir ../target-before)
+      - name: Each clip on its own, stage by stage
+        env:
+          FOOTAGE_SELECTS_FFMPEG_DIR: ${{ github.workspace }}/ffmpeg-out
+        run: target/release/examples/stages clips/*.mp4
+      - name: Videotoolbox directly, for reference
+        run: |
+          for f in clips/*.mp4; do
+            /usr/bin/time -p ffmpeg-out/ffmpeg -hide_banner -v error -hwaccel videotoolbox -hwaccel_output_format videotoolbox_vld -skip_frame noref -i "$f" -f null - 2>&1 | grep real | sed "s|^|$f |"
+          done
+      - name: Whole folder, clips at once
+        env:
+          FOOTAGE_SELECTS_FFMPEG_DIR: ${{ github.workspace }}/ffmpeg-out
+        run: |
+          for n in 1 2 3 4 6 8; do echo -n "now $n: "; target/release/examples/bench clips $n; done
+          for n in 3 5; do echo -n "before $n: "; target-before/release/examples/bench clips $n; done
+      - name: Engine tests with the shipped ffmpeg
+        run: |
+          mkdir -p dev-bin && cp ffmpeg-out/ffmpeg ffmpeg-out/ffprobe dev-bin/
+          export PATH="$PWD/dev-bin:/opt/homebrew/bin:$PATH"
+          FOOTAGE_SELECTS_FFMPEG_DIR="$PWD/dev-bin" cargo test -p selects_engine --release -- --nocapture 2>&1 | grep -E "decoder|test result|FAILED|panicked"
