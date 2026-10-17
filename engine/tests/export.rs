@@ -33,6 +33,10 @@ fn info(name: &str, rate: Rate, duration: f64, tc: Option<&str>, audio: bool) ->
         audio_channels: if audio { 2 } else { 0 },
         audio_sample_rate: if audio { 48000 } else { 0 },
         timecode: tc.map(|s| s.into()),
+        full_range: false,
+        color_transfer: String::new(),
+        detected_profile: None,
+        camera: None,
     }
 }
 
@@ -46,6 +50,9 @@ fn seg(start: f64, end: f64, f: f32, e: f32, s: f32) -> Segment {
         stability: s,
         score: (f + e + s) / 3.0,
         failed: vec![],
+        exposure_issue: None,
+        key_stops: None,
+        camera_move: false,
     }
 }
 

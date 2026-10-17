@@ -6,11 +6,15 @@
 //! 2. A sample passes when all three smoothed scores meet their thresholds.
 //! 3. Each run of passing samples becomes a candidate segment.
 //! 4. Candidates shorter than `min_length` are dropped as too short.
-//!    Candidates longer than `max_length` are split into equal parts.
+//!    Candidates longer than `max_length` are split, at moments where the
+//!    camera is still when there are any, never in the middle of a camera
+//!    move if it can be helped. With `keep_moves_whole`, a single camera move
+//!    up to twice `max_length` stays in one piece.
 //! 5. Each candidate is scored by the mean of its three smoothed scores. Only
 //!    the best `max_per_clip` are kept; the rest are dropped as over the limit.
 
-use crate::scores::{mean, ScoreSeries};
+use crate::scores::{mean, ramp, ScoreSeries};
+use crate::tone::ExposureIssue;
 use serde::{Deserialize, Serialize};
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
@@ -28,6 +32,8 @@ pub struct SelectionSettings {
     pub max_length: f32,
     /// Most selects kept per clip. 0 means no limit.
     pub max_per_clip: u32,
+    /// Let one camera move run up to twice the longest select rather than cut it in two.
+    pub keep_moves_whole: bool,
 }
 
 impl Default for SelectionSettings {
@@ -40,6 +46,7 @@ impl Default for SelectionSettings {
             min_length: 2.0,
             max_length: 10.0,
             max_per_clip: 3,
+            keep_moves_whole: true,
         }
     }
 }
@@ -70,6 +77,15 @@ pub struct Segment {
     pub score: f32,
     /// For `BelowThreshold`: which scores fell short, most frequent first.
     pub failed: Vec<String>,
+    /// The most common exposure problem in the segment, if any.
+    #[serde(default)]
+    pub exposure_issue: Option<ExposureIssue>,
+    /// Log footage: average middle tones in stops from middle grey.
+    #[serde(default)]
+    pub key_stops: Option<f32>,
+    /// The camera is moving for most of the segment.
+    #[serde(default)]
+    pub camera_move: bool,
 }
 
 impl Segment {
@@ -140,7 +156,7 @@ struct Run {
     end: f64,
 }
 
-fn segment_means(sm: &ScoreSeries, bounds: &[f64], start: f64, end: f64) -> (f32, f32, f32) {
+fn segment_indices(sm: &ScoreSeries, bounds: &[f64], start: f64, end: f64) -> Vec<usize> {
     let mut idx = Vec::new();
     for i in 0..sm.len() {
         let mid = 0.5 * (bounds[i] + bounds[i + 1]);
@@ -161,12 +177,40 @@ fn segment_means(sm: &ScoreSeries, bounds: &[f64], start: f64, end: f64) -> (f32
             .unwrap_or(0);
         idx.push(i);
     }
-    let pick = |v: &Vec<f32>| mean(&idx.iter().map(|&i| v[i]).collect::<Vec<_>>());
-    (pick(&sm.focus), pick(&sm.exposure), pick(&sm.stability))
+    idx
 }
 
-fn make_segment(sm: &ScoreSeries, bounds: &[f64], start: f64, end: f64, status: SegmentStatus) -> Segment {
-    let (f, e, s) = segment_means(sm, bounds, start, end);
+/// Camera speed, as a share of picture width per second, below which the camera counts as still.
+pub const STILL_SPEED: f32 = 0.015;
+/// Speed from which the camera counts as fully moving.
+pub const MOVING_SPEED: f32 = 0.06;
+
+/// 0 when the camera is still at sample `i`, 1 when it is clearly moving.
+fn movingness(sm: &ScoreSeries, i: usize) -> f32 {
+    sm.motion.get(i).map(|&v| ramp(v, STILL_SPEED, MOVING_SPEED)).unwrap_or(0.0)
+}
+
+fn make_segment(sm: &ScoreSeries, bounds: &[f64], start: f64, end: f64, status: SegmentStatus, exposure_min: f32) -> Segment {
+    let idx = segment_indices(sm, bounds, start, end);
+    let pick = |v: &Vec<f32>| mean(&idx.iter().map(|&i| v[i]).collect::<Vec<_>>());
+    let (f, e, s) = (pick(&sm.focus), pick(&sm.exposure), pick(&sm.stability));
+    // Count issues where exposure fell short first; otherwise anywhere.
+    let mut counts = [0usize; 6];
+    let short: Vec<usize> = idx.iter().copied().filter(|&i| sm.exposure[i] < exposure_min).collect();
+    let pool = if short.is_empty() { &idx } else { &short };
+    for &i in pool {
+        if let Some(&c) = sm.issue.get(i) {
+            counts[(c as usize).min(5)] += 1;
+        }
+    }
+    let (best, n) = counts.iter().enumerate().skip(1).max_by_key(|(_, &n)| n).map(|(c, &n)| (c, n)).unwrap_or((0, 0));
+    let exposure_issue = (n * 4 >= pool.len().max(1)).then(|| ExposureIssue::from_code(best as u8)).filter(|i| *i != ExposureIssue::None);
+    let key_stops = if sm.key_stops.len() == sm.len() && !idx.is_empty() {
+        Some((pick(&sm.key_stops) * 10.0).round() / 10.0)
+    } else {
+        None
+    };
+    let camera_move = !idx.is_empty() && idx.iter().map(|&i| movingness(sm, i)).sum::<f32>() / idx.len() as f32 >= 0.5;
     Segment {
         start,
         end,
@@ -176,7 +220,81 @@ fn make_segment(sm: &ScoreSeries, bounds: &[f64], start: f64, end: f64, status: 
         stability: s,
         score: (f + e + s) / 3.0,
         failed: Vec::new(),
+        exposure_issue,
+        key_stops,
+        camera_move,
     }
+}
+
+/// Split a long good run into parts, choosing cut points where the camera is
+/// still. Returns None when no split satisfies the length limits.
+///
+/// Costs: cutting while the camera moves costs a lot, cutting while it is
+/// still costs almost nothing; parts much shorter than `max` cost a little
+/// (so parts come out even); a part longer than `max` is only allowed when
+/// `keep_moves` is on and the part is mostly one camera move, and costs a
+/// fixed amount so it only wins over a cut in the middle of the move.
+fn split_at_rest(sm: &ScoreSeries, bounds: &[f64], run: &Run, min: f64, max: f64, keep_moves: bool) -> Option<Vec<(f64, f64)>> {
+    // Cut positions: run start, every sample boundary inside, run end.
+    let mut pos: Vec<f64> = vec![run.start];
+    let mut cut_cost: Vec<f32> = vec![0.0];
+    for k in run.first + 1..=run.last {
+        pos.push(bounds[k]);
+        let m = 0.5 * (movingness(sm, k - 1) + movingness(sm, k));
+        let speed = 0.5 * (sm.motion.get(k - 1).copied().unwrap_or(0.0) + sm.motion.get(k).copied().unwrap_or(0.0));
+        cut_cost.push(4.0 * m + 0.3 * ramp(speed, 0.0, STILL_SPEED));
+    }
+    pos.push(run.end);
+    cut_cost.push(0.0);
+    let n = pos.len();
+    // Running sum of movingness, to get a part's average quickly.
+    let mut mov_prefix = vec![0f32; n];
+    for j in 1..n {
+        let i = run.first + j - 1;
+        mov_prefix[j] = mov_prefix[j - 1] + movingness(sm, i.min(run.last));
+    }
+    let long_limit = if keep_moves { 2.0 * max } else { max };
+    let mut best = vec![f32::INFINITY; n];
+    let mut from = vec![usize::MAX; n];
+    best[0] = 0.0;
+    for j in 1..n {
+        for i in (0..j).rev() {
+            let len = pos[j] - pos[i];
+            if len > long_limit + 1e-9 {
+                break;
+            }
+            if len + 1e-9 < min || !best[i].is_finite() {
+                continue;
+            }
+            let mut c = best[i] + cut_cost[j];
+            if len > max + 1e-9 {
+                let share = (mov_prefix[j] - mov_prefix[i]) / (j - i) as f32;
+                if share < 0.5 {
+                    continue;
+                }
+                c += 2.0 + ((len - max) / max) as f32;
+            } else {
+                let short = ((max - len) / max) as f32;
+                c += 0.5 * short * short;
+            }
+            if c < best[j] {
+                best[j] = c;
+                from[j] = i;
+            }
+        }
+    }
+    if !best[n - 1].is_finite() {
+        return None;
+    }
+    let mut parts = Vec::new();
+    let mut j = n - 1;
+    while j > 0 {
+        let i = from[j];
+        parts.push((pos[i], pos[j]));
+        j = i;
+    }
+    parts.reverse();
+    Some(parts)
 }
 
 /// Split a long good stretch into equal parts no longer than `max`, never
@@ -214,6 +332,10 @@ pub fn select_clip(scores: &ScoreSeries, end_time: f64, s: &SelectionSettings) -
         focus: smooth(&scores.focus, &scores.t, s.smoothing),
         exposure: smooth(&scores.exposure, &scores.t, s.smoothing),
         stability: smooth(&scores.stability, &scores.t, s.smoothing),
+        motion: scores.motion.clone(),
+        key_stops: scores.key_stops.clone(),
+        clipped: scores.clipped.clone(),
+        issue: scores.issue.clone(),
     };
     let bounds = sample_bounds(&sm.t, end_time);
     let pass: Vec<bool> = (0..n)
@@ -263,7 +385,7 @@ pub fn select_clip(scores: &ScoreSeries, end_time: f64, s: &SelectionSettings) -
                 }
             }
             counts.sort_by(|a, b| b.1.cmp(&a.1));
-            let mut seg = make_segment(&sm, &bounds, run.start, run.end, SegmentStatus::BelowThreshold);
+            let mut seg = make_segment(&sm, &bounds, run.start, run.end, SegmentStatus::BelowThreshold, s.exposure_min);
             seg.failed = counts
                 .iter()
                 .filter(|c| c.1 > 0)
@@ -273,21 +395,27 @@ pub fn select_clip(scores: &ScoreSeries, end_time: f64, s: &SelectionSettings) -
             continue;
         }
         if run.end - run.start + 1e-9 < min {
-            segments.push(make_segment(&sm, &bounds, run.start, run.end, SegmentStatus::TooShort));
+            segments.push(make_segment(&sm, &bounds, run.start, run.end, SegmentStatus::TooShort, s.exposure_min));
             continue;
         }
-        let parts = split(run.start, run.end, min, max);
+        let needs_split = run.end - run.start > max + 1e-9;
+        let parts = if needs_split && sm.motion.len() == n {
+            split_at_rest(&sm, &bounds, run, min, max, s.keep_moves_whole)
+                .unwrap_or_else(|| split(run.start, run.end, min, max))
+        } else {
+            split(run.start, run.end, min, max)
+        };
         // Trimmed ends from splitting are reported as too short.
         let first_start = parts.first().map(|p| p.0).unwrap_or(run.start);
         let last_end = parts.last().map(|p| p.1).unwrap_or(run.end);
         if first_start - run.start > 1e-6 {
-            segments.push(make_segment(&sm, &bounds, run.start, first_start, SegmentStatus::TooShort));
+            segments.push(make_segment(&sm, &bounds, run.start, first_start, SegmentStatus::TooShort, s.exposure_min));
         }
         for (a, b) in parts {
-            segments.push(make_segment(&sm, &bounds, a, b, SegmentStatus::Kept));
+            segments.push(make_segment(&sm, &bounds, a, b, SegmentStatus::Kept, s.exposure_min));
         }
         if run.end - last_end > 1e-6 {
-            segments.push(make_segment(&sm, &bounds, last_end, run.end, SegmentStatus::TooShort));
+            segments.push(make_segment(&sm, &bounds, last_end, run.end, SegmentStatus::TooShort, s.exposure_min));
         }
     }
 

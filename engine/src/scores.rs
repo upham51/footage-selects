@@ -4,6 +4,7 @@
 //! between versions without decoding footage again.
 
 use crate::analyze::{ClipAnalysis, FrameTable};
+use crate::tone::{log_exposure, ExposureIssue, StopsTable, ToneProfile};
 use serde::{Deserialize, Serialize};
 
 /// log10 of Laplacian variance at which focus starts to earn credit, and where it is full.
@@ -35,6 +36,19 @@ pub struct ScoreSeries {
     pub focus: Vec<f32>,
     pub exposure: Vec<f32>,
     pub stability: Vec<f32>,
+    /// Camera movement per second, as a share of picture width. Used to keep
+    /// camera moves whole and to cut between them where the camera settles.
+    #[serde(default)]
+    pub motion: Vec<f32>,
+    /// For log footage: middle tones in stops from middle grey, per sample.
+    #[serde(default)]
+    pub key_stops: Vec<f32>,
+    /// Share of the picture clipped, per sample (log footage only).
+    #[serde(default)]
+    pub clipped: Vec<f32>,
+    /// The main exposure problem per sample, as `ExposureIssue::code`.
+    #[serde(default)]
+    pub issue: Vec<u8>,
 }
 
 impl ScoreSeries {
@@ -103,6 +117,86 @@ pub fn exposure_scores(f: &FrameTable) -> Vec<f32> {
         .collect()
 }
 
+/// The largest standard exposure penalty, as an issue.
+fn standard_issue(p: ExposurePenalties) -> ExposureIssue {
+    let list = [
+        (p.highlights, ExposureIssue::ClippedHighlights),
+        (p.shadows, ExposureIssue::DeepShadows),
+        (p.flat, ExposureIssue::Flat),
+        (p.level, ExposureIssue::Underexposed),
+    ];
+    // `level` covers both ends; the caller turns it into overexposed for bright frames.
+    list.into_iter()
+        .fold((0.05f32, ExposureIssue::None), |b, c| if c.0 > b.0 { c } else { b })
+        .1
+}
+
+/// How exposure is judged for a clip.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ToneContext {
+    pub profile: ToneProfile,
+    /// The file was recorded with full-range levels rather than video levels.
+    pub full_range: bool,
+}
+
+impl Default for ToneContext {
+    fn default() -> Self {
+        ToneContext {
+            profile: ToneProfile::Standard,
+            full_range: false,
+        }
+    }
+}
+
+/// Exposure scores, middle tones in stops, clipped share and main issue per sample.
+pub fn exposure_series(f: &FrameTable, tone: ToneContext) -> (Vec<f32>, Vec<f32>, Vec<f32>, Vec<u8>) {
+    let n = f.len();
+    let (mut score, mut key, mut clip, mut issue) =
+        (Vec::with_capacity(n), Vec::with_capacity(n), Vec::with_capacity(n), Vec::with_capacity(n));
+    if tone.profile.is_log() && f.has_ladder() {
+        let table = StopsTable::new(tone.profile, tone.full_range);
+        for i in 0..n {
+            let r = log_exposure(&f.ladder[i], f.vmax[i], f.top[i], &table);
+            score.push(r.score);
+            key.push((r.key * 100.0).round() / 100.0);
+            clip.push(r.clipped);
+            issue.push(r.issue.code());
+        }
+    } else {
+        for i in 0..n {
+            let p = exposure_penalties(f.mean[i], f.lo[i], f.hi[i], f.p2[i], f.p98[i]);
+            let mut iss = standard_issue(p);
+            if iss == ExposureIssue::Underexposed && f.mean[i] > 128.0 {
+                iss = ExposureIssue::Overexposed;
+            }
+            score.push(exposure_score(p));
+            issue.push(iss.code());
+        }
+    }
+    (score, key, clip, issue)
+}
+
+/// Camera movement per second as a share of picture width, for each sample.
+pub fn motion_speeds(f: &FrameTable, width: u32) -> Vec<f32> {
+    let n = f.len();
+    let w = width.max(1) as f32;
+    (0..n)
+        .map(|i| {
+            let j = if i == 0 && n > 1 { 1 } else { i };
+            if j == 0 {
+                return 0.0;
+            }
+            let dt = (f.t[j] - f.t[j - 1]).max(1e-3);
+            if f.motion_ok[j] == 0 {
+                // Too fast or too featureless to follow: treat a large shift as moving.
+                let d = (f.dx[j] * f.dx[j] + f.dy[j] * f.dy[j]).sqrt() / w;
+                return if d > 0.02 { d / dt } else { 0.0 };
+            }
+            ((f.dx[j] * f.dx[j] + f.dy[j] * f.dy[j]).sqrt() / w / dt * 1000.0).round() / 1000.0
+        })
+        .collect()
+}
+
 /// Stability separates smooth camera movement from shake. Each sample's
 /// motion is compared with the average of its neighbours: a steady pan or
 /// push has nearly constant motion (low jitter), handheld shake does not.
@@ -143,16 +237,30 @@ pub fn stability_scores(f: &FrameTable, width: u32, sample_rate: f64) -> Vec<f32
 }
 
 pub fn score_frames(frames: &FrameTable, sample_rate: f64, width: u32) -> ScoreSeries {
+    score_frames_with(frames, sample_rate, width, ToneContext::default())
+}
+
+pub fn score_frames_with(frames: &FrameTable, sample_rate: f64, width: u32, tone: ToneContext) -> ScoreSeries {
+    let (exposure, key_stops, clipped, issue) = exposure_series(frames, tone);
     ScoreSeries {
         t: frames.t.clone(),
         focus: focus_scores(&frames.lap),
-        exposure: exposure_scores(frames),
+        exposure,
         stability: stability_scores(frames, width, sample_rate),
+        motion: motion_speeds(frames, width),
+        key_stops,
+        clipped,
+        issue,
     }
 }
 
+/// Scores judged as standard footage.
 pub fn score_clip(a: &ClipAnalysis) -> ScoreSeries {
-    score_frames(&a.frames, a.sample_rate, a.width)
+    score_clip_with(a, ToneContext::default())
+}
+
+pub fn score_clip_with(a: &ClipAnalysis, tone: ToneContext) -> ScoreSeries {
+    score_frames_with(&a.frames, a.sample_rate, a.width, tone)
 }
 
 /// Average of a slice, or 0 for an empty one.

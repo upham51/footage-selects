@@ -2,6 +2,8 @@
 
 use crate::ffmpeg;
 use crate::rate::Rate;
+use crate::sidecar::{read_sidecars, CameraNotes};
+use crate::tone::{profile_from_text, DetectedProfile, ToneProfile};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::path::Path;
@@ -38,6 +40,18 @@ pub struct ClipInfo {
     pub audio_sample_rate: u32,
     /// Source start timecode as written in the file, if any.
     pub timecode: Option<String>,
+    /// The file stores full-range levels (0 to 255) instead of video levels.
+    #[serde(default)]
+    pub full_range: bool,
+    /// The transfer characteristic tag, such as bt709 or arib-std-b67.
+    #[serde(default)]
+    pub color_transfer: String,
+    /// The picture profile, when the file or a camera sidecar names it.
+    #[serde(default)]
+    pub detected_profile: Option<DetectedProfile>,
+    /// What the camera wrote beside the clip: profile, ISO, shutter, place.
+    #[serde(default)]
+    pub camera: Option<CameraNotes>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -152,7 +166,49 @@ pub fn probe(path: &Path) -> Result<ClipInfo, ProbeError> {
     let json: Value = serde_json::from_slice(&out.stdout)
         .map_err(|e| ProbeError::Unreadable(e.to_string()))?;
     let (size, modified) = file_stamp(path);
-    parse_probe(&json, path, size, modified)
+    let mut info = parse_probe(&json, path, size, modified)?;
+    if let Some(notes) = read_sidecars(path) {
+        // A sidecar is the camera's own statement, so it wins over tags.
+        if let Some(d) = notes.detected() {
+            info.detected_profile = Some(d);
+        }
+        info.camera = Some(notes);
+    }
+    Ok(info)
+}
+
+/// A profile named in the file's own tags: HLG's transfer tag, or a log
+/// name written by the camera or an app into any metadata text.
+fn profile_from_tags(json: &Value, video: &Value) -> Option<DetectedProfile> {
+    let trc = video.get("color_transfer").and_then(|v| v.as_str()).unwrap_or("");
+    if trc == "arib-std-b67" {
+        return Some(DetectedProfile {
+            profile: ToneProfile::Hlg,
+            source: "the file's colour tags".into(),
+        });
+    }
+    let mut texts: Vec<String> = Vec::new();
+    let mut collect = |v: Option<&Value>| {
+        if let Some(Value::Object(m)) = v {
+            for (k, val) in m {
+                if let Some(t) = val.as_str() {
+                    let k = k.to_ascii_lowercase();
+                    // Encoder and handler names mention codecs, not profiles.
+                    if !k.contains("encoder") && !k.contains("handler") && !k.contains("vendor") {
+                        texts.push(t.to_string());
+                    }
+                }
+            }
+        }
+    };
+    collect(json.get("format").and_then(|f| f.get("tags")));
+    collect(video.get("tags"));
+    texts.iter().find_map(|t| {
+        profile_from_text(t).filter(|p| p.is_log()).map(|profile| DetectedProfile {
+            profile,
+            source: "the file's metadata".into(),
+        })
+    })
 }
 
 /// Turn a raw ffmpeg error line into something a person can act on.
@@ -331,6 +387,19 @@ pub fn parse_probe(json: &Value, path: &Path, size: u64, modified: u64) -> Resul
             .and_then(num)
             .unwrap_or(0.0) as u32,
         timecode,
+        full_range: video.get("color_range").and_then(|v| v.as_str()) == Some("pc")
+            || video
+                .get("pix_fmt")
+                .and_then(|v| v.as_str())
+                .map(|p| p.starts_with("yuvj"))
+                .unwrap_or(false),
+        color_transfer: video
+            .get("color_transfer")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string(),
+        detected_profile: profile_from_tags(json, video),
+        camera: None,
     })
 }
 
