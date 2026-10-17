@@ -1,4 +1,4 @@
-Footage Selects pulls a first pass of selects from raw footage using classical image math. It runs fully offline.
+This app pulls a first pass of selects from raw footage using classical image math. It runs fully offline.
 
 Download the file for your computer:
 

@@ -2,12 +2,19 @@ name: Release
 
 # Builds the installers. A tag starting with v (for example v0.1.0) also
 # attaches them to the GitHub release for that tag, creating it if needed.
-# Running it by hand from the Actions tab builds the installers without
-# publishing anything, which is useful for testing.
+#
+# Running it by hand from the Actions tab builds the installers. With
+# "publish" ticked it also creates the tag v<version> (the version in
+# src-tauri/tauri.conf.json) on the commit it ran on, and the release.
 on:
   push:
     tags: ["v*"]
   workflow_dispatch:
+    inputs:
+      publish:
+        description: "Create the tag and release for the version in tauri.conf.json"
+        type: boolean
+        default: false
 
 permissions:
   contents: write
@@ -174,25 +181,35 @@ jobs:
   publish:
     name: Attach to the GitHub release
     needs: build
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: startsWith(github.ref, 'refs/tags/v') || inputs.publish
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
+      - name: Work out the tag
+        id: tag
+        run: |
+          version=$(node -p "require('./src-tauri/tauri.conf.json').version")
+          if [ "${{ github.ref_type }}" = "tag" ]; then tag="${{ github.ref_name }}"; else tag="v$version"; fi
+          if [ "$tag" != "v$version" ]; then
+            echo "The tag $tag does not match version $version in src-tauri/tauri.conf.json. Update the version, then tag again."; exit 1
+          fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
       - uses: actions/download-artifact@v4
         with:
           path: dist
           merge-multiple: true
       - name: Write the update manifest
-        run: node scripts/write-update-manifest.mjs dist "${{ github.ref_name }}" "${{ github.repository }}"
+        run: node scripts/write-update-manifest.mjs dist "${{ steps.tag.outputs.tag }}" "${{ github.repository }}"
       - name: Upload
         env:
           GH_TOKEN: ${{ github.token }}
-          TAG: ${{ github.ref_name }}
+          TAG: ${{ steps.tag.outputs.tag }}
         run: |
           name=$(node -p "require('./src-tauri/tauri.conf.json').productName")
           rm -f dist/update-*.json
-          gh release view "$TAG" > /dev/null 2>&1 || \
-            gh release create "$TAG" --title "$name $TAG" --notes-file .github/release-notes.md || \
-            gh release view "$TAG" > /dev/null
+          if ! gh release view "$TAG" > /dev/null 2>&1; then
+            # Creates the tag on this commit too, when it does not exist yet.
+            gh release create "$TAG" --target "$GITHUB_SHA" --title "$name $TAG" --notes-file .github/release-notes.md
+          fi
           gh release upload "$TAG" dist/* --clobber
-          gh release view "$TAG" --json assets -q '.assets[].name'
+          gh release view "$TAG" --json url,assets -q '.url, .assets[].name'
