@@ -10,6 +10,7 @@ pub const PRODUCT_VERSION: &str = env!("PRODUCT_VERSION");
 pub mod analyze;
 pub mod export;
 pub mod ffmpeg;
+pub mod fingerprint;
 pub mod metrics;
 pub mod probe;
 pub mod rate;

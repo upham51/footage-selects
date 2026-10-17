@@ -187,6 +187,7 @@ fn selection_over_two_hours_of_footage_is_instant() {
                 dx: (rnd() - 0.5) * 6.0,
                 dy: (rnd() - 0.5) * 4.0,
                 motion_ok: true,
+                ..Default::default()
             };
             table.push(i as f64 * 0.25, &m);
         }
