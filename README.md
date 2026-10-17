@@ -6,7 +6,7 @@ It understands log footage. S-Log3, V-Log, Canon Log 3, LogC3, F-Log, D-Log, D-L
 
 It is free, it works on Mac (Apple silicon) and Windows, and it runs entirely on your computer. Nothing is uploaded, there is no account, and it works without an internet connection. It uses plain image math, not artificial intelligence.
 
-A first pass over about two hours of footage takes a few minutes. You then tune the result with sliders, which update instantly.
+On an Apple silicon Mac, 4K footage is analyzed at roughly 8 times real time, so two hours of 4K takes about 15 minutes. HD footage and proxies are usually quicker, and 120 fps footage slower, because the computer has to unpack every frame it uses to rebuild the next. You then tune the result with sliders, which update instantly.
 
 ## What it does
 

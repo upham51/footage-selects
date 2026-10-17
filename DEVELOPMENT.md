@@ -87,6 +87,8 @@ cargo run --release -p selects_engine --example inspect -- --summary *.mov      
 dev/speed-clips.sh /tmp/speed-clips 5                                            # synthetic 4K H.264 and HEVC test clips
 ```
 
+What the measurements say (October 2026). On the Linux test machine and on GitHub's Apple silicon runner (a 3-core M1 virtual machine), ffmpeg's decoding is over 95% of the time per clip; choosing samples, downsizing on the GPU or with `scale`, and the pipe add almost nothing, and the engine's own work is under 1 ms per sample. The runner's VideoToolbox decoded HEVC (4:2:0 and 4:2:2 10-bit, landscape and rotated) on the GPU path, while H.264 fell back to software there; on a real Mac VideoToolbox also decodes 8-bit 4:2:0 H.264, but not 10-bit 4:2:2 H.264, which is always software. Clips at once: on the runner 2 to 3 at once were fastest and more made no difference, which matches `runner::worker_count` (half the cores, 2 to 6). The 50 times real time goal in the build plan is not reachable for 4K long-GOP footage at 4 samples per second, because the decoder has to decode every reference frame whatever the sample rate: a 4K 120 fps clip encoded with P-frames only decodes all of its frames. Getting near it would mean decoding only keyframes (`-skip_frame nokey`), which gives one or two samples a second and makes the stability measure meaningless, so it has not been done.
+
 Set `FOOTAGE_SELECTS_FFMPEG_DIR` to time the ffmpeg that ships (`scripts/build-ffmpeg.sh linux out`) rather than the one on your PATH. The "Speed check (Apple silicon)" workflow, run by hand from the Actions tab, does all of this on GitHub's Apple silicon runner with the shipped macOS ffmpeg and compares against an earlier version.
 
 ## Updates

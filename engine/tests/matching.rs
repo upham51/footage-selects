@@ -115,19 +115,36 @@ fn sources() -> &'static Sources {
     })
 }
 
-const GRADE: &str = "eq=contrast=1.5:gamma=0.8:saturation=1.4,curves=preset=strong_contrast";
+/// A strong grade: contrast 1.5, gamma 0.8, saturation 1.4, then a contrast curve.
+const GRADE_EQ: &str = "eq=contrast=1.5:gamma=0.8:saturation=1.4,curves=preset=strong_contrast";
+/// The same grade from LGPL filters, for ffmpeg builds without `eq` (which is
+/// GPL), such as the one the app ships and the release workflow tests with.
+const GRADE_LGPL: &str = "lutyuv=y='clip(255*pow(clip((val/255-0.5)*1.5+0.5,0,1),1/0.8),0,255)',hue=s=1.4,curves=preset=strong_contrast";
+
+fn grade() -> &'static str {
+    static G: OnceLock<bool> = OnceLock::new();
+    let has_eq = *G.get_or_init(|| {
+        Command::new("ffmpeg")
+            .args(["-hide_banner", "-filters"])
+            .output()
+            .map(|o| String::from_utf8_lossy(&o.stdout).lines().any(|l| l.split_whitespace().nth(1) == Some("eq")))
+            .unwrap_or(false)
+    });
+    if has_eq { GRADE_EQ } else { GRADE_LGPL }
+}
 
 fn finished_landscape(s: &Sources) -> PathBuf {
     let out = dir().join("finished_landscape.mp4");
     let norm = "scale=640:360,setsar=1,format=yuv420p";
+    let grade = grade();
     let graph = format!(
-        "[0:v]setpts=PTS-STARTPTS,fps=24,{norm},{GRADE}[p0];\
+        "[0:v]setpts=PTS-STARTPTS,fps=24,{norm},{grade}[p0];\
          [1:v]fps=24,{norm}[p1];\
-         [2:v]setpts=2.5*(PTS-STARTPTS),fps=24,{norm},{GRADE}[p2];\
+         [2:v]setpts=2.5*(PTS-STARTPTS),fps=24,{norm},{grade}[p2];\
          [3:v]fps=24,drawbox=x=100:y=150:w=440:h=60:color=white:t=fill,{norm}[p3];\
-         [4:v]setpts=PTS-STARTPTS,fps=24,crop=640:268,pad=640:360:0:46:black,{norm},{GRADE}[p4];\
-         [5:v]setpts=PTS-STARTPTS,fps=24,{norm},{GRADE}[p5];\
-         [6:v]setpts=PTS-STARTPTS,fps=24,{norm},{GRADE}[p6];\
+         [4:v]setpts=PTS-STARTPTS,fps=24,crop=640:268,pad=640:360:0:46:black,{norm},{grade}[p4];\
+         [5:v]setpts=PTS-STARTPTS,fps=24,{norm},{grade}[p5];\
+         [6:v]setpts=PTS-STARTPTS,fps=24,{norm},{grade}[p6];\
          [p0][p1][p2][p3][p4][p5][p6]concat=n=7:v=1:a=0[v]"
     );
     let st = |p: &PathBuf| p.to_str().unwrap().to_string();
@@ -151,9 +168,10 @@ fn finished_landscape(s: &Sources) -> PathBuf {
 fn finished_vertical(s: &Sources) -> PathBuf {
     let out = dir().join("finished_vertical_v2.mp4");
     let norm = "crop=ih*9/16:ih,scale=360:640,setsar=1,format=yuv420p";
+    let grade = grade();
     let graph = format!(
-        "[0:v]setpts=PTS-STARTPTS,fps=24,{norm},{GRADE}[p0];\
-         [1:v]setpts=PTS-STARTPTS,fps=24,{norm},{GRADE}[p1];\
+        "[0:v]setpts=PTS-STARTPTS,fps=24,{norm},{grade}[p0];\
+         [1:v]setpts=PTS-STARTPTS,fps=24,{norm},{grade}[p1];\
          [p0][p1]concat=n=2:v=1:a=0[v]"
     );
     ffmpeg(
