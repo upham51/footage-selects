@@ -1,0 +1,126 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Footage Selects</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <span class="wordmark">Footage Selects</span>
+      <span class="project-line" id="project-line">New project</span>
+    </div>
+    <div class="topbar-actions">
+      <button class="btn btn-quiet" id="btn-new">New project</button>
+      <button class="btn btn-quiet" id="btn-open">Open project</button>
+      <button class="btn btn-secondary" id="btn-save">Save project</button>
+    </div>
+  </header>
+
+  <section class="panel summary" id="summary" aria-live="polite">
+    <div class="summary-line" id="summary-line"></div>
+    <div class="progress-row" id="progress-row" hidden>
+      <div class="progress-text" id="progress-text"></div>
+      <div class="progress-track" role="progressbar" aria-valuemin="0" aria-valuemax="100" id="progress-track">
+        <div class="progress-fill" id="progress-fill"></div>
+      </div>
+      <button class="btn btn-secondary btn-small" id="btn-analysis"></button>
+    </div>
+  </section>
+
+  <main class="layout">
+    <section class="panel main-panel" id="main-panel"></section>
+
+    <aside class="panel side" id="side">
+      <div class="side-section">
+        <div class="side-head">
+          <h2 class="eyebrow">Selection</h2>
+          <button class="link" id="btn-reset">Reset to defaults</button>
+        </div>
+        <p class="hint">Sliders change the selects right away. Footage is not analyzed again.</p>
+        <div class="slider" data-key="focus_min" data-kind="score">
+          <label for="s-focus">Focus at least</label><output id="o-focus"></output>
+          <input type="range" id="s-focus" min="0" max="100" step="1">
+        </div>
+        <div class="slider" data-key="exposure_min" data-kind="score">
+          <label for="s-exposure">Exposure at least</label><output id="o-exposure"></output>
+          <input type="range" id="s-exposure" min="0" max="100" step="1">
+        </div>
+        <div class="slider" data-key="stability_min" data-kind="score">
+          <label for="s-stability">Stability at least</label><output id="o-stability"></output>
+          <input type="range" id="s-stability" min="0" max="100" step="1">
+        </div>
+        <div class="slider" data-key="smoothing" data-kind="seconds">
+          <label for="s-smoothing">Smoothing</label><output id="o-smoothing"></output>
+          <input type="range" id="s-smoothing" min="0" max="5" step="0.25">
+        </div>
+        <div class="slider" data-key="min_length" data-kind="seconds">
+          <label for="s-min">Shortest select</label><output id="o-min"></output>
+          <input type="range" id="s-min" min="0.5" max="20" step="0.5">
+        </div>
+        <div class="slider" data-key="max_length" data-kind="seconds">
+          <label for="s-max">Longest select</label><output id="o-max"></output>
+          <input type="range" id="s-max" min="1" max="60" step="1">
+        </div>
+        <div class="slider" data-key="max_per_clip" data-kind="count">
+          <label for="s-cap">Selects per clip</label><output id="o-cap"></output>
+          <input type="range" id="s-cap" min="1" max="21" step="1">
+        </div>
+      </div>
+
+      <div class="side-section">
+        <h2 class="eyebrow">Analysis</h2>
+        <label class="field-label" for="sample-rate">Frames scored per second</label>
+        <select id="sample-rate" class="input">
+          <option value="1">1 per second</option>
+          <option value="2">2 per second</option>
+          <option value="4">4 per second</option>
+          <option value="6">6 per second</option>
+          <option value="8">8 per second</option>
+          <option value="12">12 per second</option>
+        </select>
+        <p class="hint">This is the only setting that needs the footage analyzed again. More frames per second catches shorter moments but takes longer.</p>
+      </div>
+
+      <div class="side-section">
+        <h2 class="eyebrow">Export</h2>
+        <label class="field-label" for="timeline-name">Timeline name</label>
+        <input id="timeline-name" class="input" type="text" maxlength="80" spellcheck="false">
+        <label class="field-label" for="timeline-rate">Timeline frame rate</label>
+        <select id="timeline-rate" class="input"></select>
+        <label class="check" id="drop-frame-row">
+          <input type="checkbox" id="drop-frame"> <span>Drop frame timecode</span>
+        </label>
+        <fieldset class="radios">
+          <legend class="field-label">Layout</legend>
+          <label class="radio"><input type="radio" name="layout" value="full_clips_below"> <span>Full clips on track 1, each select above its source on track 2</span></label>
+          <label class="radio"><input type="radio" name="layout" value="selects_only"> <span>Selects only, back to back on track 2</span></label>
+        </fieldset>
+        <button class="btn btn-primary btn-block" id="btn-export">Export timeline</button>
+        <p class="hint" id="export-hint">Writes four files side by side: .xml for Premiere Pro and DaVinci Resolve, .fcpxml for Final Cut Pro, an .edl, and a .csv spreadsheet.</p>
+      </div>
+    </aside>
+  </main>
+
+  <div class="drop-overlay" id="drop-overlay" hidden>
+    <div class="drop-card">
+      <svg class="icon icon-lg" viewBox="0 0 14 14"><path d="M7 2v7M4 6l3 3 3-3M2.5 11.5h9"/></svg>
+      <div>Drop to add this footage</div>
+    </div>
+  </div>
+
+  <div class="modal-backdrop" id="modal" hidden>
+    <div class="modal" role="dialog" aria-modal="true" aria-labelledby="modal-title">
+      <h2 id="modal-title"></h2>
+      <div id="modal-body"></div>
+      <div class="modal-actions" id="modal-actions"></div>
+    </div>
+  </div>
+
+  <div class="toast" id="toast" role="status" hidden></div>
+
+  <script src="app.js"></script>
+</body>
+</html>

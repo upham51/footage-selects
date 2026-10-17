@@ -1,0 +1,51 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Footage Selects",
+  "version": "0.1.0",
+  "identifier": "com.footageselects.desktop",
+  "build": {
+    "frontendDist": "../ui"
+  },
+  "app": {
+    "withGlobalTauri": true,
+    "windows": [
+      {
+        "label": "main",
+        "title": "Footage Selects",
+        "width": 1360,
+        "height": 880,
+        "minWidth": 1040,
+        "minHeight": 680,
+        "dragDropEnabled": true,
+        "backgroundColor": "#FAF8F3"
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; script-src 'self'; connect-src ipc: http://ipc.localhost"
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["app", "dmg", "nsis"],
+    "category": "Video",
+    "shortDescription": "Pulls selects from raw footage",
+    "longDescription": "Footage Selects scores every clip for focus, exposure and camera stability using classical image math, picks the best moments, and exports a timeline for DaVinci Resolve, Premiere Pro and Final Cut Pro. It works fully offline.",
+    "copyright": "Released under the MIT license. Includes FFmpeg (LGPL/GPL).",
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ],
+    "externalBin": ["binaries/ffmpeg", "binaries/ffprobe"],
+    "macOS": {
+      "minimumSystemVersion": "11.0"
+    },
+    "windows": {
+      "nsis": {
+        "installMode": "currentUser"
+      }
+    }
+  }
+}

@@ -3,6 +3,7 @@
 //! is classical image arithmetic on downsized grayscale frames.
 
 pub mod analyze;
+pub mod export;
 pub mod ffmpeg;
 pub mod metrics;
 pub mod probe;

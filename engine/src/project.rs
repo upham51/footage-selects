@@ -264,6 +264,72 @@ impl Project {
         (out, sum)
     }
 
+    /// The most common standard frame rate among readable clips, weighted by
+    /// clip count; ties go to the rate with more total footage.
+    pub fn most_common_rate(&self) -> Rate {
+        let mut counts: Vec<(Rate, usize, f64)> = Vec::new();
+        for info in self.clips.iter().filter_map(|c| c.info.as_ref()) {
+            match counts.iter_mut().find(|(r, _, _)| *r == info.rate) {
+                Some(e) => {
+                    e.1 += 1;
+                    e.2 += info.duration;
+                }
+                None => counts.push((info.rate, 1, info.duration)),
+            }
+        }
+        counts.sort_by(|a, b| {
+            b.1.cmp(&a.1)
+                .then(b.2.partial_cmp(&a.2).unwrap_or(std::cmp::Ordering::Equal))
+        });
+        let r = counts.first().map(|c| c.0).unwrap_or(Rate::new(24000, 1001));
+        // High frame rate footage is usually played back in a normal timeline.
+        if crate::rate::TIMELINE_RATES.contains(&r) {
+            r
+        } else {
+            Rate::snap(r.fps() / ((r.fps() / 30.0).round().max(1.0)))
+        }
+    }
+
+    pub fn timeline_rate(&self) -> Rate {
+        self.export.timeline_rate.unwrap_or_else(|| self.most_common_rate())
+    }
+
+    /// Drop frame on when chosen, otherwise when most clips at a drop frame
+    /// capable rate carry drop frame timecode. Off for rates without drop frame.
+    pub fn timeline_drop_frame(&self) -> bool {
+        let rate = self.timeline_rate();
+        if !rate.supports_drop_frame() {
+            return false;
+        }
+        if let Some(d) = self.export.drop_frame {
+            return d;
+        }
+        let (mut df, mut ndf) = (0, 0);
+        for info in self.clips.iter().filter_map(|c| c.info.as_ref()) {
+            if info.rate.supports_drop_frame() {
+                match info.timecode.as_deref() {
+                    Some(tc) if crate::rate::is_drop_frame_string(tc) => df += 1,
+                    _ => ndf += 1,
+                }
+            }
+        }
+        df > ndf
+    }
+
+    /// The most common picture size, used for the exported timeline.
+    pub fn most_common_resolution(&self) -> (u32, u32) {
+        let mut counts: Vec<((u32, u32), usize)> = Vec::new();
+        for info in self.clips.iter().filter_map(|c| c.info.as_ref()) {
+            let key = (info.width, info.height);
+            match counts.iter_mut().find(|(k, _)| *k == key) {
+                Some(e) => e.1 += 1,
+                None => counts.push((key, 1)),
+            }
+        }
+        counts.sort_by(|a, b| b.1.cmp(&a.1).then((b.0 .0 * b.0 .1).cmp(&(a.0 .0 * a.0 .1))));
+        counts.first().map(|c| c.0).unwrap_or((1920, 1080))
+    }
+
     pub fn to_json(&self) -> String {
         serde_json::to_string(self).expect("project serialises")
     }
