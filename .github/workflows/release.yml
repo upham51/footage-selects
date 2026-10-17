@@ -196,6 +196,9 @@ jobs:
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
       - uses: actions/download-artifact@v4
         with:
+          # Only the installers. The Windows ffmpeg build is an input to the
+          # installer, not something to attach to the release.
+          pattern: installer-*
           path: dist
           merge-multiple: true
       - name: Write the update manifest
