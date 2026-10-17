@@ -1,0 +1,32 @@
+# The landing page and waitlist Worker. Cloudflare deploys it from GitHub
+# (Workers Builds) with the root directory set to "worker".
+name = "footage-selects-waitlist"
+main = "src/index.js"
+compatibility_date = "2026-10-01"
+workers_dev = true
+
+# The page and its files. Requests to /api/* and the home page go through the
+# Worker first; every other file is served directly.
+[assets]
+directory = "../site"
+binding = "ASSETS"
+run_worker_first = ["/api/*", "/", "/index.html"]
+not_found_handling = "404-page"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "footage-selects-waitlist"
+database_id = "6dcd3f73-445d-4a48-981f-044fa5b0dd58"
+migrations_dir = "migrations"
+
+# At most 5 signups a minute from one connection, per Cloudflare location.
+[[ratelimits]]
+name = "SIGNUP_LIMITER"
+namespace_id = "4721"
+
+  [ratelimits.simple]
+  limit = 5
+  period = 60
+
+[observability]
+enabled = true

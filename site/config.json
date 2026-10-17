@@ -1,0 +1,16 @@
+{
+  "plannedPrice": {
+    "currency": "$",
+    "min": 12,
+    "max": 20,
+    "period": "month",
+    "includes": "a monthly footage allowance"
+  },
+  "demoVideo": {
+    "src": "",
+    "poster": "",
+    "caption": ""
+  },
+  "turnstileSiteKey": "",
+  "pageUrl": ""
+}

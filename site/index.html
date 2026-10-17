@@ -1,0 +1,235 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Pull the usable shots from raw footage</title>
+  <meta name="description" content="A desktop app that scores every clip for focus, exposure and camera shake, then hands you a timeline of the usable moments for DaVinci Resolve, Premiere Pro or Final Cut Pro. It runs offline on your computer.">
+  <meta property="og:title" content="Pull the usable shots from raw footage">
+  <meta property="og:site_name" content="">
+  <meta property="og:type" content="website">
+  <link rel="icon" href="favicon.svg" type="image/svg+xml">
+  <link rel="preload" href="fonts/inter.woff2" as="font" type="font/woff2" crossorigin>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="wrap topbar-inner">
+      <a class="wordmark" href="#top" data-fill="product-name">Selects</a>
+      <nav class="topnav" aria-label="Sections">
+        <a href="#how">How it works</a>
+        <a href="#today">Today and planned</a>
+        <a href="#faq">Questions</a>
+        <a class="btn btn-primary btn-small" href="#waitlist">Join the waitlist</a>
+      </nav>
+    </div>
+  </header>
+
+  <main id="top">
+    <section class="hero">
+      <div class="lattice" aria-hidden="true"></div>
+      <div class="wrap hero-inner">
+        <p class="eyebrow">Desktop app for Mac and Windows</p>
+        <h1>Pull the usable shots from hours of raw footage.</h1>
+        <p class="lede"><span data-fill="product-name">The app</span> scores every clip you shot for focus, exposure and camera shake, then hands you a timeline of the usable moments for DaVinci Resolve, Premiere Pro or Final Cut Pro. It runs on your own computer and works offline.</p>
+        <div class="row">
+          <a class="btn btn-primary" href="#waitlist">Join the waitlist</a>
+          <a class="link" href="#how">See how it works</a>
+        </div>
+      </div>
+    </section>
+
+    <section class="wrap section" aria-labelledby="demo-title">
+      <h2 class="visually-hidden" id="demo-title">Demo</h2>
+      <div class="panel demo" id="demo-slot">
+        <div class="demo-empty">
+          <svg class="icon icon-lg" viewBox="0 0 14 14" aria-hidden="true"><rect x="1.5" y="3" width="11" height="8" rx="1.5"/><path d="M6 5.5v3l2.5-1.5z"/></svg>
+          <p class="demo-title">Demo video</p>
+          <p class="muted">A short screen recording of the app at work will appear here.</p>
+        </div>
+      </div>
+    </section>
+
+    <section class="wrap section" id="who" aria-labelledby="who-title">
+      <p class="eyebrow">Who it is for</p>
+      <h2 id="who-title">Footage with little or no dialogue</h2>
+      <p class="section-lede">The app judges how a shot looks, not what is said in it. That suits shoots where picture is the story.</p>
+      <div class="grid four">
+        <div class="panel card"><h3>Travel</h3><p>Days of handheld and gimbal clips, where the usable moments are scattered through long takes.</p></div>
+        <div class="panel card"><h3>Drone</h3><p>Long flights with a few steady passes worth keeping between the climbs, turns and corrections.</p></div>
+        <div class="panel card"><h3>Real estate</h3><p>Walkthroughs and exteriors where a soft or badly exposed pass has to go before the edit starts.</p></div>
+        <div class="panel card"><h3>Events</h3><p>Hours of coverage where you need the sharp, steady, well lit stretches first.</p></div>
+      </div>
+      <p class="note">Less suited to interviews and talking heads, where the best take depends on the words.</p>
+    </section>
+
+    <section class="wrap section" id="how" aria-labelledby="how-title">
+      <p class="eyebrow">How it works</p>
+      <h2 id="how-title">Three steps</h2>
+      <ol class="steps">
+        <li class="panel step">
+          <span class="step-num">1</span>
+          <div><h3>Drop in a folder of clips</h3><p>Any mix of cameras, formats, frame rates and proxies. Every clip is read and scored on your computer.</p></div>
+        </li>
+        <li class="panel step">
+          <span class="step-num">2</span>
+          <div><h3>Tune the selects with sliders</h3><p>Set how sharp, well exposed and steady a moment must be, and how long. The selects update as you move the sliders, and a graph for each clip shows why a stretch was kept or dropped.</p></div>
+        </li>
+        <li class="panel step">
+          <span class="step-num">3</span>
+          <div><h3>Export a timeline</h3><p>Open it in DaVinci Resolve, Premiere Pro or Final Cut Pro. Each select sits above its source clip with a marker that lists its scores.</p></div>
+        </li>
+      </ol>
+    </section>
+
+    <section class="wrap section" id="today" aria-labelledby="today-title">
+      <p class="eyebrow">Today and planned</p>
+      <h2 id="today-title">What it does today, and what is planned</h2>
+      <p class="section-lede">These two lists are kept separate on purpose. Nothing under planned exists yet.</p>
+      <div class="grid two">
+        <div class="panel list-panel">
+          <h3><span class="pill pill-green"><svg class="icon" viewBox="0 0 14 14" aria-hidden="true"><path d="M2.5 7.5l3 3 6-7"/></svg>Today</span> The base app, in early testing</h3>
+          <ul class="ticks">
+            <li>Scores focus, exposure and camera stability for every clip, using classical image math rather than machine learning</li>
+            <li>Reads mixed cameras, formats, resolutions and frame rates, including phone footage, rotated clips and proxies</li>
+            <li>Builds selects you tune with sliders, updated as you move them</li>
+            <li>Shows a graph for each clip with every kept and dropped stretch, and the reason</li>
+            <li>Exports timelines for DaVinci Resolve, Premiere Pro and Final Cut Pro, plus an edit list and a spreadsheet</li>
+            <li>Runs on Mac with Apple silicon and on Windows, offline, free, with no account</li>
+          </ul>
+        </div>
+        <div class="panel list-panel">
+          <h3><span class="pill pill-amber"><svg class="icon" viewBox="0 0 14 14" aria-hidden="true"><circle cx="7" cy="7" r="5.2"/><path d="M7 4.2V7l2 1.4"/></svg>Planned</span> Optional smart features</h3>
+          <ul class="clocks">
+            <li>Spot near-duplicate shots and keep the best of each</li>
+            <li>Avoid cutting in the middle of a sentence when there is speech</li>
+            <li>Label shot types such as aerial, wide, detail and tracking, and search them in plain words</li>
+            <li>Arrange selects into a simple story order, with timecode order one click away</li>
+            <li>Learn your taste from timelines you have already finished</li>
+            <li>Keep a searchable library of everything you have shot</li>
+          </ul>
+        </div>
+      </div>
+    </section>
+
+    <section class="wrap section" id="pricing" aria-labelledby="pricing-title">
+      <p class="eyebrow">Pricing</p>
+      <h2 id="pricing-title">Free today, with planned paid extras</h2>
+      <div class="grid two">
+        <div class="panel price-panel">
+          <h3>Base app</h3>
+          <p class="price">Free</p>
+          <p>Everything listed under today. No account, no time limit.</p>
+        </div>
+        <div class="panel price-panel">
+          <h3>Smart features <span class="pill pill-grey"><svg class="icon" viewBox="0 0 14 14" aria-hidden="true"><path d="M3.5 7h7"/></svg>Planned, not charged</span></h3>
+          <p class="price" data-fill="price">Price to be set</p>
+          <p>Planned price, including <span data-fill="price-includes">a monthly footage allowance</span>. Not available yet, and nothing is charged today. Joining the waitlist costs nothing.</p>
+        </div>
+      </div>
+    </section>
+
+    <section class="wrap section" id="waitlist" aria-labelledby="waitlist-title">
+      <div class="panel form-panel">
+        <p class="eyebrow">Waitlist</p>
+        <h2 id="waitlist-title">Get the first download</h2>
+        <p>Leave your email and a few details about what you shoot. You will hear from us when there is something to try.</p>
+
+        <div id="form-status" aria-live="polite"></div>
+
+        <form id="signup-form" action="/api/signup" method="post" novalidate>
+          <input type="hidden" name="started" id="started" value="">
+          <div class="hp" aria-hidden="true">
+            <label for="website">Leave this empty</label>
+            <input type="text" id="website" name="website" tabindex="-1" autocomplete="off">
+          </div>
+
+          <label class="field-label" for="email">Email</label>
+          <input class="input" type="email" id="email" name="email" autocomplete="email" required maxlength="254" placeholder="you@example.com">
+          <p class="field-error" id="email-error" hidden></p>
+
+          <label class="field-label" for="editor">Which editor do you use?</label>
+          <select class="input" id="editor" name="editor" required>
+            <option value="">Choose one</option>
+            <option value="resolve">DaVinci Resolve</option>
+            <option value="premiere">Premiere Pro</option>
+            <option value="final_cut">Final Cut Pro</option>
+            <option value="other">Another editor</option>
+            <option value="none">I don't edit yet</option>
+          </select>
+          <p class="field-error" id="editor-error" hidden></p>
+
+          <fieldset class="choices">
+            <legend class="field-label">What do you shoot? Choose any</legend>
+            <label class="check"><input type="checkbox" name="shoots" value="travel"> <span>Travel</span></label>
+            <label class="check"><input type="checkbox" name="shoots" value="drone"> <span>Drone</span></label>
+            <label class="check"><input type="checkbox" name="shoots" value="real_estate"> <span>Real estate</span></label>
+            <label class="check"><input type="checkbox" name="shoots" value="events"> <span>Events</span></label>
+            <label class="check"><input type="checkbox" name="shoots" value="weddings"> <span>Weddings</span></label>
+            <label class="check"><input type="checkbox" name="shoots" value="outdoor"> <span>Outdoor and adventure</span></label>
+            <label class="check"><input type="checkbox" name="shoots" value="other" id="shoots-other-box"> <span>Something else</span></label>
+            <input class="input" type="text" id="shoots_other" name="shoots_other" maxlength="100" placeholder="What else do you shoot?" aria-label="What else do you shoot?">
+          </fieldset>
+          <p class="field-error" id="shoots-error" hidden></p>
+
+          <label class="field-label" for="hours_per_month">Roughly how many hours of footage do you shoot a month?</label>
+          <select class="input" id="hours_per_month" name="hours_per_month" required>
+            <option value="">Choose one</option>
+            <option value="under_2">Under 2 hours</option>
+            <option value="2_to_5">2 to 5 hours</option>
+            <option value="5_to_15">5 to 15 hours</option>
+            <option value="15_to_40">15 to 40 hours</option>
+            <option value="over_40">More than 40 hours</option>
+          </select>
+          <p class="field-error" id="hours_per_month-error" hidden></p>
+
+          <div id="turnstile-slot"></div>
+
+          <button class="btn btn-primary btn-block" type="submit" id="signup-button">Join the waitlist</button>
+          <p class="privacy">We use your email only to tell you about <span data-fill="product-name">the app</span>, never sell or share it, and remove it whenever you ask.</p>
+        </form>
+      </div>
+    </section>
+
+    <section class="wrap section" id="faq" aria-labelledby="faq-title">
+      <p class="eyebrow">Questions</p>
+      <h2 id="faq-title">Questions</h2>
+      <div class="faq">
+        <details class="panel">
+          <summary>Does the app upload my footage?</summary>
+          <p>No. The base app never uploads footage. It reads your clips on your own computer and works without an internet connection.</p>
+        </details>
+        <details class="panel">
+          <summary>What would the smart features send, and when?</summary>
+          <p>Nothing unless you turn them on. Some planned smart features run entirely on your computer. The optional cloud features, when turned on, send only a few small still frames from moments already selected, never video files or your whole library, and the app will say exactly what is sent before anything leaves.</p>
+        </details>
+        <details class="panel">
+          <summary>Is it free?</summary>
+          <p>The base app is free. The smart features are planned as a paid option at <span data-fill="price">a price still to be set</span>. They are not available yet and nothing is charged today.</p>
+        </details>
+        <details class="panel">
+          <summary>Does it use AI?</summary>
+          <p>The base app does not. It measures sharpness, exposure and shake with classical image math. The planned smart features would add machine learning, mostly on your own computer, with an optional cloud part that is off unless you turn it on.</p>
+        </details>
+        <details class="panel">
+          <summary>Which computers and editors does it work with?</summary>
+          <p>Mac with Apple silicon (M1 or later) and 64-bit Windows. It exports timelines for DaVinci Resolve, Premiere Pro and Final Cut Pro, plus an edit decision list and a spreadsheet.</p>
+        </details>
+        <details class="panel">
+          <summary>What does joining the waitlist commit me to?</summary>
+          <p>Nothing. You will get an email when there is something to try. Ask to be removed at any time by replying to any email from us.</p>
+        </details>
+      </div>
+    </section>
+  </main>
+
+  <footer class="footer">
+    <div class="wrap footer-inner">
+      <span><span data-fill="product-name">The app</span>, <span data-fill="year">2026</span></span>
+      <span class="muted">The base app never uploads footage.</span>
+    </div>
+  </footer>
+
+  <script src="site.js"></script>
+</body>
+</html>

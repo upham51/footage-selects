@@ -173,6 +173,20 @@ A check sends GitHub a request for one small file that describes the newest vers
 3. Sound is not analyzed. In the exported timeline the full clips carry their sound; the selects above them are picture only, so you do not hear everything twice.
 4. Camera RAW formats such as Blackmagic RAW and RED R3D cannot be read. Use proxies or transcodes of that footage instead; Footage Selects handles proxies well.
 
+## Landing page and waitlist
+
+The project also has a one-page website that explains the app and collects a waitlist, to test whether people want it. It lives in the `site` folder, and a small Cloudflare Worker in the `worker` folder serves it and stores signups in a Cloudflare D1 database called footage-selects-waitlist. Everything runs on Cloudflare's free plan, and Cloudflare publishes it straight from GitHub, so it uses no GitHub Actions minutes.
+
+What visitors see: what the app does, a place for a demo video, who it is for, how it works, what exists today kept separate from what is planned, the planned price for smart features (marked as planned and not charged), the waitlist form, a one sentence privacy note, and common questions.
+
+What is stored for each signup: email, editor, what they shoot, roughly how many hours they shoot a month, and the time they joined. No IP address or tracking information is kept. Signing up twice with the same email keeps one entry.
+
+Spam protection: a hidden field that only bots fill in, a check that the form was not filled in faster than a person can, a limit of 5 signups a minute from one connection, and optionally Cloudflare Turnstile (a quiet "are you human" check).
+
+To see the count and download the list, open the page's address followed by `/admin.html` and enter your admin password. It shows the total, signups in the last 7 days, a breakdown by editor, footage type and hours, and a button that downloads every signup as a spreadsheet.
+
+What lives in config: the planned price, the demo video and the Turnstile key are in `site/config.json`. The product name comes from the same single setting the app uses.
+
 ## Credits
 
 Footage Selects uses FFmpeg (ffmpeg.org) to read video. The copy inside the app is built from FFmpeg's own source under the GNU Lesser General Public License, version 2.1, with no parts under the GPL. It uses the Inter, Inter Tight and Averia Serif Libre typefaces under the SIL Open Font License. Every bundled library and its license is listed in [THIRD_PARTY_LICENSES](THIRD_PARTY_LICENSES), which is also inside the installed app.

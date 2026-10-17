@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="robots" content="noindex, nofollow">
+  <title>Waitlist</title>
+  <link rel="icon" href="favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <main class="admin-wrap">
+    <p class="eyebrow">Private</p>
+    <h1>Waitlist</h1>
+
+    <form class="panel form-panel admin-login" id="login">
+      <label class="field-label" for="token">Admin password</label>
+      <input class="input" type="password" id="token" autocomplete="current-password" required>
+      <p class="privacy">This is the ADMIN_TOKEN secret you set on the Worker in Cloudflare. It stays in this browser tab only and is forgotten when you close it.</p>
+      <button class="btn btn-primary btn-block" type="submit">Show signups</button>
+    </form>
+
+    <div id="out" aria-live="polite"></div>
+  </main>
+  <script src="admin.js"></script>
+</body>
+</html>

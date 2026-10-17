@@ -78,6 +78,22 @@ Signing: run the "Create update signing keys" workflow once from the Actions tab
 
 The updater fetches without credentials, so it only works when the release files are publicly downloadable.
 
+## Landing page and waitlist (site/ and worker/)
+
+`site/` is plain HTML, CSS and JavaScript with no build step. `worker/` is a Cloudflare Worker (`wrangler.toml`) that serves `site/` as static assets and handles `/api/signup` and `/api/admin/*`; for `/` it fills the page with the product name (from `src-tauri/tauri.conf.json`), the planned price, demo video and Turnstile key (from `site/config.json`) and sets the content security policy. Signups go to D1 (`footage-selects-waitlist`, schema in `worker/migrations/`). Spam protection: honeypot field, minimum fill time, the Workers rate limiting binding (5 a minute per connection per location), optional Turnstile (`TURNSTILE_SECRET_KEY` secret plus `turnstileSiteKey` in config). The admin endpoints need the `ADMIN_TOKEN` secret.
+
+Deployment is Cloudflare Workers Builds: the repository is connected in the Cloudflare dashboard with root directory `worker` and deploy command `npx wrangler deploy`, so every push to main redeploys. Schema changes: add a numbered file to `worker/migrations/` and apply it with `npx wrangler d1 migrations apply footage-selects-waitlist --remote`.
+
+```
+cd worker
+npm ci
+npm test                                   # unit tests, real SQLite via node:sqlite
+npx wrangler d1 migrations apply footage-selects-waitlist --local
+echo 'ADMIN_TOKEN="local-test-only"' > .dev.vars
+npx wrangler dev                           # http://localhost:8787
+node e2e/browser-check.mjs http://127.0.0.1:8787 local-test-only /tmp   # needs Playwright
+```
+
 ## Releases
 
 Update the version in `src-tauri/tauri.conf.json`, `src-tauri/Cargo.toml` and `package.json`, then either push a tag starting with `v` (for example `v0.1.1`), or run the Release workflow from the Actions tab with "publish" ticked, which creates the tag `v<version>` on that commit itself (useful where tags cannot be pushed). The Release workflow builds ffmpeg (or reuses its cache), runs the engine tests against it on each platform, builds the macOS (Apple silicon) disk image and the Windows installer, and attaches both to the GitHub release for the tag. The Mac app is ad-hoc signed, not notarized, so the README explains how to approve it on first open.

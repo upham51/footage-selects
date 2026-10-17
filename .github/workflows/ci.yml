@@ -20,6 +20,21 @@ jobs:
       - name: Run engine tests
         run: cargo test -p selects_engine --release
 
+  waitlist:
+    name: Waitlist page and Worker tests
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        working-directory: worker
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm ci
+      - run: npm test
+      - run: node --check ../site/site.js && node --check ../site/admin.js
+
   app-check:
     name: App compiles (Linux)
     runs-on: ubuntu-24.04
