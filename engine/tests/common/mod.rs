@@ -11,9 +11,39 @@ pub fn fixtures_dir() -> PathBuf {
     dir
 }
 
+/// Encoder settings for test clips: H.264 when this ffmpeg has libx264, otherwise
+/// MPEG-4 Part 2, which every build includes (LGPL builds, as shipped on Windows, lack x264).
+fn video_codec() -> &'static [&'static str] {
+    static C: OnceLock<bool> = OnceLock::new();
+    let has_x264 = *C.get_or_init(|| {
+        if std::env::var_os("FS_TEST_FORCE_MPEG4").is_some() {
+            return false;
+        }
+        Command::new("ffmpeg")
+            .args(["-hide_banner", "-encoders"])
+            .output()
+            .map(|o| String::from_utf8_lossy(&o.stdout).contains("libx264"))
+            .unwrap_or(false)
+    });
+    if has_x264 {
+        &["-c:v", "libx264", "-preset", "ultrafast"]
+    } else {
+        &["-c:v", "mpeg4", "-q:v", "2"]
+    }
+}
+
 fn run_ffmpeg(args: &[&str], out: &Path) {
     if out.exists() {
         return;
+    }
+    // Swap in the available encoder wherever a clip asks for libx264.
+    let mut args: Vec<&str> = args.to_vec();
+    if let Some(i) = args.iter().position(|a| *a == "libx264") {
+        let mut j = i + 1;
+        if args.get(j) == Some(&"-preset") {
+            j += 2;
+        }
+        args.splice(i - 1..j, video_codec().iter().copied());
     }
     let tmp = out.with_extension(format!(
         "tmp.{}",

@@ -171,12 +171,47 @@ pub fn analysis_size(info: &ClipInfo, target: u32) -> (u32, u32) {
     (w as u32, h as u32)
 }
 
+/// Ways to decode, tried in order until one produces frames.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Decoder {
+    /// macOS: VideoToolbox decodes, unwanted frames are dropped and the rest
+    /// are downsized on the GPU, so only small frames are copied to memory.
+    GpuScaled,
+    /// Hardware decode with every frame copied back to memory.
+    Hardware,
+    Software,
+}
+
+impl Decoder {
+    pub fn label(self) -> &'static str {
+        match self {
+            Decoder::GpuScaled => "hardware, downsized on the GPU",
+            Decoder::Hardware => "hardware when available",
+            Decoder::Software => "software",
+        }
+    }
+}
+
 fn hwaccel_name() -> &'static str {
     if cfg!(target_os = "macos") {
         "videotoolbox"
     } else {
         "auto"
     }
+}
+
+/// The decoders worth trying for a clip, best first.
+pub fn decoder_order(info: &ClipInfo, hardware: bool) -> Vec<Decoder> {
+    let mut v = Vec::new();
+    if hardware {
+        // Rotated clips need a rotation filter that runs on ordinary frames.
+        if cfg!(target_os = "macos") && info.rotation == 0 {
+            v.push(Decoder::GpuScaled);
+        }
+        v.push(Decoder::Hardware);
+    }
+    v.push(Decoder::Software);
+    v
 }
 
 /// Progress reported while a clip decodes.
@@ -198,21 +233,18 @@ pub fn analyze_clip(
     mut on_progress: impl FnMut(Progress),
 ) -> Result<ClipAnalysis, AnalyzeError> {
     let started = std::time::Instant::now();
-    let attempts: Vec<bool> = if opts.hardware_decode {
-        vec![true, false]
-    } else {
-        vec![false]
-    };
+    let attempts = decoder_order(info, opts.hardware_decode);
     let mut last_err = AnalyzeError::Decode("No frames came out of the decoder.".into());
-    for hw in attempts {
+    let last = *attempts.last().unwrap();
+    for dec in attempts {
         let mut delivered = 0usize;
-        let result = run_decoder(info, opts, hw, cancel, &mut |t: &FrameTable| {
+        let result = run_decoder(info, opts, dec, cancel, &mut |t: &FrameTable| {
             delivered += t.len();
             on_progress(Progress::Frames(t))
         });
         match result {
             Ok(mut a) => {
-                if a.frames.is_empty() && hw {
+                if a.frames.is_empty() && dec != last {
                     if delivered > 0 {
                         on_progress(Progress::Restart);
                     }
@@ -239,20 +271,32 @@ pub fn analyze_clip(
 fn run_decoder(
     info: &ClipInfo,
     opts: &AnalyzeOptions,
-    hardware: bool,
+    decoder: Decoder,
     cancel: &AtomicBool,
     on_progress: &mut dyn FnMut(&FrameTable),
 ) -> Result<ClipAnalysis, AnalyzeError> {
     let (w, h) = analysis_size(info, opts.width);
     let r = opts.sample_rate;
-    let filter = format!(
-        "select='isnan(prev_selected_t)+gt(floor(t*{r}),floor(prev_selected_t*{r}))',\
-         scale={w}:{h}:flags=area,format=gray,showinfo"
-    );
+    let select = format!("select='isnan(prev_selected_t)+gt(floor(t*{r}),floor(prev_selected_t*{r}))'");
+    let filter = match decoder {
+        Decoder::GpuScaled => {
+            // Frames stay on the GPU until they are small; the download format
+            // must match the decoder's, which is 10-bit for 10 and 12-bit footage.
+            let sw = if info.pix_fmt.contains("10") || info.pix_fmt.contains("12") { "p010le" } else { "nv12" };
+            format!("{select},scale_vt=w={w}:h={h},hwdownload,format={sw},format=gray,showinfo")
+        }
+        _ => format!("{select},scale={w}:{h}:flags=area,format=gray,showinfo"),
+    };
     let mut cmd = ffmpeg::command("ffmpeg");
     cmd.args(["-hide_banner", "-nostdin", "-nostats", "-loglevel", "info"]);
-    if hardware {
-        cmd.args(["-hwaccel", hwaccel_name()]);
+    match decoder {
+        Decoder::GpuScaled => {
+            cmd.args(["-hwaccel", "videotoolbox", "-hwaccel_output_format", "videotoolbox_vld"]);
+        }
+        Decoder::Hardware => {
+            cmd.args(["-hwaccel", hwaccel_name()]);
+        }
+        Decoder::Software => {}
     }
     cmd.args(["-skip_frame", "noref"]);
     cmd.arg("-i").arg(&info.path);
@@ -294,7 +338,7 @@ fn run_decoder(
     let mut buf = vec![0u8; frame_bytes];
     let mut prev: Option<MotionFrame> = None;
     let mut analysis = ClipAnalysis::empty(opts.sample_rate, w, h);
-    analysis.decoder = if hardware { "hardware when available" } else { "software" }.into();
+    analysis.decoder = decoder.label().into();
     let mut pending = FrameTable::default();
     let mut cancelled = false;
     let mut last_t: Option<f64> = None;

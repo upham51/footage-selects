@@ -28,6 +28,7 @@ fn info(name: &str, rate: Rate, duration: f64, tc: Option<&str>, audio: bool) ->
         rate,
         variable_frame_rate: false,
         codec: "h264".into(),
+        pix_fmt: "yuv420p".into(),
         has_audio: audio,
         audio_channels: if audio { 2 } else { 0 },
         audio_sample_rate: if audio { 48000 } else { 0 },

@@ -1,0 +1,65 @@
+# Developing Footage Selects
+
+## Layout
+
+1. `engine/`: the Rust library that does all the work. Probing (`probe.rs`), sampled decoding through ffmpeg (`analyze.rs`), per-frame measurements (`metrics.rs`), scores (`scores.rs`), selection (`selection.rs`), the project file (`project.rs`), timecode (`rate.rs`) and the four export writers (`export/`).
+2. `src-tauri/`: the Tauri v2 desktop shell. Commands the window calls (`commands.rs`), the parallel analysis workers (`runner.rs`) and the snapshots sent to the window (`state.rs`).
+3. `ui/`: the window itself, plain HTML, CSS and JavaScript with no build step. It talks to Rust through Tauri's global API.
+4. `dev/ui-harness/`: opens the window in an ordinary browser with a fake Rust side, for working on the interface. Open `dev/ui-harness/index.html?scene=list` (also `detail`, `empty`, `loading`, `error`, `probing`). Regenerate its `index.html` from `ui/index.html` if the markup changes.
+5. `dev/validate_exports.py` and `dev/validate_matrix.sh`: read exported timelines back with OpenTimelineIO.
+6. `scripts/`: download the ffmpeg builds that ship inside the app.
+
+## How analysis works
+
+ffmpeg decodes each clip, skipping non-reference frames at the decoder, keeps the first frame in each sample interval with its real timestamp, downsizes it to about 480 pixels wide in grayscale and pipes raw pixels to the engine. On macOS it first tries VideoToolbox with dropping and downsizing on the GPU, then VideoToolbox with frames copied back, then software. Elsewhere it tries ffmpeg's automatic hardware decoding, then software.
+
+Per frame the engine measures the variance of the Laplacian (focus), a luma histogram (clipped highlights, crushed shadows, the 2nd to 98th percentile spread, mean level), and global translation from the previous sample by coarse-to-fine block matching on an image pyramid. Stability compares each sample's motion with the average of its neighbours, so steady movement scores well and jitter does not. Raw measurements are cached in the project; scores and selection are recomputed from them on demand.
+
+## Running it
+
+You need Rust (stable), Node.js 20 or later, and ffmpeg on your PATH for development and tests.
+
+Linux also needs the WebKitGTK development packages:
+
+```
+sudo apt-get install libwebkit2gtk-4.1-dev libgtk-3-dev libsoup-3.0-dev librsvg2-dev
+```
+
+For a development build the bundler wants sidecar binaries named for your platform in `src-tauri/binaries/`. Copy your own ffmpeg and ffprobe there, for example `ffmpeg-aarch64-apple-darwin`, or run `scripts/fetch-ffmpeg-macos.sh` on a Mac.
+
+```
+npm ci
+npx tauri dev          # run the app
+npx tauri build        # build an installer for this computer
+```
+
+Paths given on the command line are added on start, which is handy for testing: `target/debug/footage-selects /path/to/footage`.
+
+## Tests
+
+```
+cargo test -p selects_engine --release
+```
+
+The tests generate synthetic clips with ffmpeg (sharp and blurred, well exposed, dark and blown out, steady, panning and shaky, variable frame rate, rotated, with and without audio and timecode) and check that scores rank correctly, that selection returns the expected segments, that projects save and reload, and that the export writers get frame rates, timecode, track placement and markers right.
+
+To read every export back with an independent parser:
+
+```
+python3 -m venv .venv
+.venv/bin/pip install opentimelineio otio-fcp-adapter otio-fcpx-xml-adapter otio-cmx3600-adapter
+dev/validate_matrix.sh /tmp/footage-selects-matrix .venv/bin/python
+```
+
+OpenTimelineIO's FCPXML reader truncates frame rates to whole numbers (23.976 becomes 23), so FCPXML is only read back at whole-number rates. The engine's own FCPXML tests cover the NTSC rates.
+
+Measuring speed on your own footage:
+
+```
+cargo run --release -p selects_engine --example bench -- /path/to/footage 3
+cargo run --release -p selects_engine --example inspect -- clip.mov
+```
+
+## Releases
+
+Push a tag starting with `v` (for example `v0.1.1`) after updating the version in `src-tauri/tauri.conf.json`, `src-tauri/Cargo.toml` and `package.json`. The Release workflow downloads ffmpeg, runs the engine tests against it on each platform, builds the macOS (Apple silicon) disk image and the Windows installer, and attaches both to the GitHub release for the tag. The Mac app is ad-hoc signed, not notarized, so the README explains how to approve it on first open.

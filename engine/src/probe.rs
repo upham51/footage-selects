@@ -30,6 +30,9 @@ pub struct ClipInfo {
     pub rate: Rate,
     pub variable_frame_rate: bool,
     pub codec: String,
+    /// Decoded pixel format, such as yuv420p or yuv422p10le.
+    #[serde(default)]
+    pub pix_fmt: String,
     pub has_audio: bool,
     pub audio_channels: u32,
     pub audio_sample_rate: u32,
@@ -312,6 +315,11 @@ pub fn parse_probe(json: &Value, path: &Path, size: u64, modified: u64) -> Resul
             .get("codec_name")
             .and_then(|v| v.as_str())
             .unwrap_or("unknown")
+            .to_string(),
+        pix_fmt: video
+            .get("pix_fmt")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
             .to_string(),
         has_audio: audio.is_some(),
         audio_channels: audio

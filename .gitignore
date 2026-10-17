@@ -5,3 +5,4 @@ src-tauri/binaries/ffprobe-*
 src-tauri/gen/
 engine/tests/fixtures/generated/
 .DS_Store
+dev-bin/

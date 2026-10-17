@@ -144,6 +144,10 @@ fn unreadable_file_reports_a_plain_error() {
 fn analysis_speed_is_reported() {
     let f = common::footage();
     let (a, _) = analyse(&f.panning);
-    println!("4 s clip analysed in {:.3} s with {} decoding", a.elapsed, a.decoder);
+    println!("4 s clip analysed in {:.3} s, decoder: {}", a.elapsed, a.decoder);
+    // On macOS the GPU path should be the one that succeeds.
+    if cfg!(target_os = "macos") {
+        println!("macOS decoder in use: {}", a.decoder);
+    }
     assert!(a.elapsed > 0.0);
 }

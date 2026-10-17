@@ -26,7 +26,11 @@
   },
   "bundle": {
     "active": true,
-    "targets": ["app", "dmg", "nsis"],
+    "targets": [
+      "app",
+      "dmg",
+      "nsis"
+    ],
     "category": "Video",
     "shortDescription": "Pulls selects from raw footage",
     "longDescription": "Footage Selects scores every clip for focus, exposure and camera stability using classical image math, picks the best moments, and exports a timeline for DaVinci Resolve, Premiere Pro and Final Cut Pro. It works fully offline.",
@@ -38,9 +42,13 @@
       "icons/icon.icns",
       "icons/icon.ico"
     ],
-    "externalBin": ["binaries/ffmpeg", "binaries/ffprobe"],
+    "externalBin": [
+      "binaries/ffmpeg",
+      "binaries/ffprobe"
+    ],
     "macOS": {
-      "minimumSystemVersion": "11.0"
+      "minimumSystemVersion": "11.0",
+      "signingIdentity": "-"
     },
     "windows": {
       "nsis": {

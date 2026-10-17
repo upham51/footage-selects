@@ -1,0 +1,105 @@
+name: Release
+
+# Builds the installers. A tag starting with v (for example v0.1.0) also
+# attaches them to the GitHub release for that tag, creating it if needed.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build ${{ matrix.name }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: macOS (Apple silicon)
+            os: macos-14
+            target: aarch64-apple-darwin
+            bundles: app,dmg
+            asset_suffix: mac-apple-silicon.dmg
+          - name: Windows
+            os: windows-latest
+            target: x86_64-pc-windows-msvc
+            bundles: nsis
+            asset_suffix: windows-setup.exe
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+
+      - name: Fetch ffmpeg (macOS)
+        if: runner.os == 'macOS'
+        run: scripts/fetch-ffmpeg-macos.sh
+
+      - name: Fetch ffmpeg (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: scripts/fetch-ffmpeg-windows.ps1
+
+      - name: Test the engine with the ffmpeg that ships
+        shell: bash
+        run: |
+          export PATH="$PWD/dev-bin:$PATH"
+          which ffmpeg
+          cargo test -p selects_engine --release
+          # Show which decoding path this machine used.
+          cargo test -p selects_engine --release --test analysis analysis_speed_is_reported -- --nocapture
+
+      - name: Install the Tauri command line tool
+        run: npm ci
+
+      - name: Build installer
+        run: npx tauri build --target ${{ matrix.target }} --bundles ${{ matrix.bundles }}
+
+      - name: Collect installer
+        id: collect
+        shell: bash
+        run: |
+          version=$(node -p "require('./src-tauri/tauri.conf.json').version")
+          mkdir -p dist
+          if [ "${{ runner.os }}" = "macOS" ]; then
+            src=$(ls target/${{ matrix.target }}/release/bundle/dmg/*.dmg | head -1)
+          else
+            src=$(ls target/${{ matrix.target }}/release/bundle/nsis/*-setup.exe | head -1)
+          fi
+          out="dist/Footage-Selects-$version-${{ matrix.asset_suffix }}"
+          cp "$src" "$out"
+          ls -la dist
+          echo "file=$out" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: installer-${{ matrix.target }}
+          path: ${{ steps.collect.outputs.file }}
+          if-no-files-found: error
+
+      - name: Attach to the GitHub release
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          gh release view "$TAG" > /dev/null 2>&1 || \
+            gh release create "$TAG" --title "Footage Selects $TAG" --notes-file .github/release-notes.md || \
+            gh release view "$TAG" > /dev/null
+          gh release upload "$TAG" "${{ steps.collect.outputs.file }}" --clobber
