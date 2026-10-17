@@ -207,6 +207,24 @@ function statusCell(c) {
   return pill(tone, shape, label);
 }
 
+const SCORE_WORD = { focus: "Focus", exposure: "Exposure", stability: "Stability" };
+
+/** Why an analyzed clip has no selects, with a shape and a word as well as color. */
+function noSelectHtml(r) {
+  let p, text;
+  if (r.kind === "too_short") {
+    p = pill("grey", "dash", "Too short");
+    text = `Good stretches last up to ${fmtDur(r.longest)}, the shortest select is ${fmtDur(r.needs)}`;
+  } else {
+    p = pill("red", "triangle", "Below threshold");
+    const word = SCORE_WORD[r.score] || r.score;
+    text = r.kind === "average"
+      ? `${word} averaged ${r.average}, needs ${r.needs}`
+      : `${word} under ${r.needs} for ${r.share}% of the clip`;
+  }
+  return `<div class="no-select">${p}<span>${esc(text)}</span></div>`;
+}
+
 function selectsCell(c) {
   const kept = c.kept.length;
   const secs = c.kept.reduce((a, k) => a + (k.end - k.start), 0);
@@ -215,6 +233,7 @@ function selectsCell(c) {
   if ((c.status === "missing" || c.status === "changed") && c.status_detail && !kept) text = esc(c.status_detail);
   else if (!kept && (c.status === "waiting" || c.status === "not_analyzed")) text = "Not scored yet";
   else if (!kept && (c.status === "analyzing" || c.status === "partial")) text = "None so far";
+  else if (!kept && c.no_select) return `${stripSvg(c)}${noSelectHtml(c.no_select)}`;
   else if (!kept) text = "None meet the thresholds";
   else text = `<strong class="num">${kept}</strong> ${kept === 1 ? "select" : "selects"} · <span class="num">${fmtDur(secs)}</span>`;
   const extra = c.over_limit ? ` · ${c.over_limit} more over the limit` : "";
@@ -364,7 +383,8 @@ function renderDetail() {
     info.has_audio ? `Audio, ${plural(info.audio_channels, "channel")}` : "No audio",
     info.timecode ? `Timecode <span class="num">${esc(info.timecode)}</span>` : "No timecode, starts at 00:00:00:00",
   ] : [];
-  if (d.sample_rate) meta.push(`Scored at ${d.sample_rate} frames per second${d.analysis_seconds ? ` in ${fmtDur(d.analysis_seconds)}` : ""}`);
+  if (d.sample_rate) meta.push(`Scored at ${plural(d.sample_rate, "frame")} per second${d.analysis_seconds ? ` in ${fmtDur(d.analysis_seconds)}` : ""}`);
+  if (d.decoder) meta.push(`Decoded by ${esc(d.decoder)}`);
   const isLog = d.profile && d.profile.profile !== "standard";
   const profileHtml = profileRowHtml(d);
   const cameraHtml = cameraRowHtml(d);
@@ -839,7 +859,7 @@ async function changeSampleRate() {
   if (!analyzed) { state = await invoke("set_sample_rate", { rate, reanalyze: true }); renderAll(); return; }
   const speed = state.analysis.speed;
   const est = speed ? ` That took about ${fmtDur(state.summary.analyzed_seconds / speed)} last time at ${state.sample_rate} per second.` : "";
-  const choice = await modal("Analyze the footage again?", `<p>Scoring ${rate} frames per second instead of ${state.sample_rate} means analyzing ${plural(analyzed, "clip")} again.${esc(est)}</p><p class="muted">Current selects stay on screen and are replaced clip by clip as the new scores arrive.</p>`, [
+  const choice = await modal("Analyze the footage again?", `<p>Scoring ${plural(rate, "frame")} per second instead of ${state.sample_rate} means analyzing ${plural(analyzed, "clip")} again.${esc(est)}</p><p class="muted">Current selects stay on screen and are replaced clip by clip as the new scores arrive.</p>`, [
     { label: `Keep ${state.sample_rate} per second`, value: false },
     { label: `Analyze again at ${rate} per second`, value: true, primary: true },
   ]);

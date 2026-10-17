@@ -284,3 +284,94 @@ fn real_clip_sharp_blurred_sharp_yields_the_two_sharp_parts() {
     assert_eq!(below.len(), 1);
     assert_eq!(below[0].failed[0], "focus");
 }
+
+use selects_engine::selection::{no_select_reason, NoSelectReason};
+
+#[test]
+fn no_select_reason_names_the_score_that_missed_by_most() {
+    // Like the handheld night clip from the October test: focus 82, exposure 58, stability 17.
+    let sel = select_clip(&series(&[(0.82, 0.58, 0.17); 10]), 10.0, &settings());
+    assert_eq!(sel.kept().count(), 0);
+    assert_eq!(
+        no_select_reason(&sel, &settings()),
+        Some(NoSelectReason::Average { score: "stability".into(), average: 17, needs: 50 })
+    );
+    // Exposure misses by more than focus does.
+    let sel = select_clip(&series(&[(0.40, 0.20, 0.90); 6]), 6.0, &settings());
+    assert_eq!(
+        no_select_reason(&sel, &settings()),
+        Some(NoSelectReason::Average { score: "exposure".into(), average: 20, needs: 50 })
+    );
+}
+
+#[test]
+fn a_near_miss_is_never_shown_as_meeting_the_threshold() {
+    let sel = select_clip(&series(&[(0.9, 0.9, 0.497); 6]), 6.0, &settings());
+    assert_eq!(
+        no_select_reason(&sel, &settings()),
+        Some(NoSelectReason::Average { score: "stability".into(), average: 49, needs: 50 })
+    );
+}
+
+#[test]
+fn no_select_reason_when_averages_pass_but_never_together() {
+    // Focus and stability take turns failing: both average above 50, no stretch passes all three.
+    let mut per_second = Vec::new();
+    for i in 0..8 {
+        per_second.push(if i % 2 == 0 { (0.95, 0.9, 0.3) } else { (0.3, 0.9, 0.95) });
+    }
+    per_second.push((0.3, 0.9, 0.95));
+    let sel = select_clip(&series(&per_second), 9.0, &settings());
+    assert_eq!(sel.kept().count(), 0);
+    match no_select_reason(&sel, &settings()) {
+        Some(NoSelectReason::Share { score, share, needs }) => {
+            assert_eq!(score, "focus");
+            assert_eq!(share, 56);
+            assert_eq!(needs, 50);
+        }
+        other => panic!("{other:?}"),
+    }
+}
+
+#[test]
+fn no_select_reason_for_good_stretches_that_are_too_short() {
+    let mut per_second = vec![(0.9, 0.9, 0.9); 1];
+    per_second.extend([(0.9, 0.9, 0.2); 1]);
+    per_second.extend([(0.9, 0.9, 0.9); 1]);
+    per_second.extend([(0.9, 0.9, 0.2); 1]);
+    per_second.extend([(0.9, 0.9, 0.9); 1]);
+    let sel = select_clip(&series(&per_second), 5.0, &settings());
+    assert_eq!(sel.kept().count(), 0);
+    match no_select_reason(&sel, &settings()) {
+        Some(NoSelectReason::TooShort { longest, needs }) => {
+            assert!((longest - 1.0).abs() < 0.2, "{longest}");
+            assert_eq!(needs, 2.0);
+        }
+        other => panic!("{other:?}"),
+    }
+}
+
+#[test]
+fn no_reason_when_a_clip_has_selects_or_no_scores() {
+    let sel = select_clip(&series(&[(0.9, 0.9, 0.9); 5]), 5.0, &settings());
+    assert_eq!(no_select_reason(&sel, &settings()), None);
+    let sel = select_clip(&ScoreSeries::default(), 0.0, &settings());
+    assert_eq!(no_select_reason(&sel, &settings()), None);
+}
+
+#[test]
+fn a_shaky_clip_is_explained_by_its_stability() {
+    let f = common::footage();
+    let info = probe(&f.shaky).unwrap();
+    let a = analyze_clip(&info, &AnalyzeOptions::default(), &AtomicBool::new(false), |_| {}).unwrap();
+    let s = SelectionSettings::default();
+    let sel = select_clip(&score_clip(&a), info.duration, &s);
+    assert_eq!(sel.kept().count(), 0, "the shaky test clip should have no selects");
+    match no_select_reason(&sel, &s) {
+        Some(NoSelectReason::Average { score, average, needs }) => {
+            assert_eq!(score, "stability");
+            assert!(average < needs);
+        }
+        other => panic!("{other:?}"),
+    }
+}

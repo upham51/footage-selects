@@ -27,8 +27,12 @@
       profile_source: n.startsWith("DJI") || n.startsWith("C0") ? "camera" : n.startsWith("IMG") ? "picture" : n.startsWith("A0") ? "project" : "default",
       used: i === 1 ? [[dur * 0.3, dur * 0.3 + 4]] : i === 2 ? [[4, 9], [dur * 0.6, dur * 0.6 + 3]] : [],
       choppy_shutter: n === "DJI_0042.MP4",
+      no_select: null,
     };
   });
+  // Two analysed clips with nothing kept, to show the reason in the list.
+  Object.assign(clips[3], { kept: [], no_select: { kind: "average", score: "stability", average: 17, needs: 50 } });
+  Object.assign(clips[9], { kept: [], no_select: { kind: "too_short", longest: 1.4, needs: 2 } });
   const sel = { focus_min: .5, exposure_min: .5, stability_min: .5, smoothing: 1, min_length: 2, max_length: 10, max_per_clip: 3, keep_moves_whole: true };
   const profiles = [["standard", "Standard (Rec. 709)"], ["s_log3", "Sony S-Log3"], ["v_log", "Panasonic V-Log"], ["c_log3", "Canon Log 3"], ["log_c3", "ARRI LogC3"], ["f_log", "Fujifilm F-Log"], ["f_log2", "Fujifilm F-Log2"], ["d_log", "DJI D-Log"], ["d_log_m", "DJI D-Log M"], ["apple_log", "Apple Log"], ["n_log", "Nikon N-Log"], ["hlg", "HLG"], ["generic_log", "Log, curve unknown"]].map(([id, label]) => ({ id, label, approximate: id === "d_log_m" || id === "generic_log" }));
   const rates = [["24000", 1001, "23.976"], [24, 1, "24"], [25, 1, "25"], [30000, 1001, "29.97"], [30, 1, "30"], [50, 1, "50"], [60000, 1001, "59.94"], [60, 1, "60"]].map(([n, d, l]) => ({ num: +n, den: d, label: l, drop_frame_capable: l === "29.97" || l === "59.94" }));
@@ -78,7 +82,7 @@
     let keptSeen = 0; for (const g of segs) if (g.status === "kept") { keptSeen++; if (keptSeen > 3) g.status = "over_limit"; }
     return { id, name: c.name, path: c.path, duration: c.duration, measured_until: c.status === "analyzing" ? c.duration * .45 : c.duration,
       info: { duration: c.duration, width: c.width, height: c.height, rotation: 0, rate: { num: 24000, den: 1001 }, variable_frame_rate: false, codec: "h264", has_audio: true, audio_channels: 2, timecode: "01:02:10:04" },
-      raw, smoothed, segments: segs, selection: sel, sample_rate: 4, decoder: "hardware when available", analysis_seconds: 1.8,
+      raw, smoothed, segments: segs, selection: sel, sample_rate: 4, decoder: "hardware, downsized on the GPU", analysis_seconds: 1.8,
       profile: { profile: "d_log_m", source: "camera", explanation: "Named by the camera's file DJI_0042.SRT." }, chosen_profile: null,
       camera_profile: "DJI D-Log M, named by the camera's file DJI_0042.SRT",
       camera: { source: "DJI_0042.SRT", camera: "DJI", lens: null, picture_profile: "dlog_m", iso: 100, shutter: 1 / 2000, aperture: 1.7, latitude: 38.71223, longitude: -9.13934, max_height: 84 },

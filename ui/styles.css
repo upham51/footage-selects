@@ -224,6 +224,8 @@ td.num, th.num { text-align: right; }
 .sel-cell { min-width: 200px; }
 .sel-count { font-size: 13px; color: var(--muted); margin-top: 3px; white-space: nowrap; }
 .sel-count strong { color: var(--text); font-weight: 600; }
+.no-select { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; margin-top: 4px; font-size: 13px; color: var(--muted); line-height: 1.4; }
+.no-select .pill { height: 22px; font-size: 12px; }
 
 /* Status pills: shape + word + color, never color alone */
 .pill {

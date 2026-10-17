@@ -445,6 +445,65 @@ pub fn select_clip(scores: &ScoreSeries, end_time: f64, s: &SelectionSettings) -
     }
 }
 
+/// Why a fully analysed clip has no selects, in the terms the sliders use.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum NoSelectReason {
+    /// This score's average over the clip is under its threshold. Both are 0 to 100.
+    Average { score: String, average: u32, needs: u32 },
+    /// The averages pass, but this score is under its threshold for `share`
+    /// percent of the clip, so no stretch passes all three at once.
+    Share { score: String, share: u32, needs: u32 },
+    /// Some stretches pass, but all are shorter than the shortest select.
+    TooShort { longest: f64, needs: f64 },
+}
+
+/// The main reason a clip got no selects, or None when it has some (or
+/// nothing has been measured). The score that misses its threshold by the
+/// most points is named; ties go to focus, then exposure, then stability.
+pub fn no_select_reason(sel: &ClipSelection, s: &SelectionSettings) -> Option<NoSelectReason> {
+    let sm = &sel.smoothed;
+    if sm.is_empty() || sel.segments.iter().any(|g| g.status == SegmentStatus::Kept) {
+        return None;
+    }
+    let scores = [
+        ("focus", &sm.focus, s.focus_min),
+        ("exposure", &sm.exposure, s.exposure_min),
+        ("stability", &sm.stability, s.stability_min),
+    ];
+    let pts = |v: f32| (v * 100.0).clamp(0.0, 100.0);
+    let mut worst: Option<(&str, f32, f32)> = None;
+    for (name, v, min) in scores {
+        let avg = pts(crate::scores::mean(v));
+        let short = pts(min) - avg;
+        if short > 0.0 && worst.map_or(true, |w| short > w.2) {
+            worst = Some((name, avg, short));
+        }
+    }
+    if let Some((name, avg, _)) = worst {
+        let needs = scores.iter().find(|x| x.0 == name).map(|x| pts(x.2)).unwrap_or(0.0);
+        // Rounded down, so a near miss never reads as meeting the threshold.
+        return Some(NoSelectReason::Average { score: name.into(), average: (avg + 0.001).floor() as u32, needs: needs.round() as u32 });
+    }
+    let mut most: Option<(&str, usize, f32)> = None;
+    for (name, v, min) in scores {
+        let under = v.iter().filter(|x| **x < min).count();
+        if under > 0 && most.map_or(true, |m| under > m.1) {
+            most = Some((name, under, min));
+        }
+    }
+    let too_short: Vec<&Segment> = sel.segments.iter().filter(|g| g.status == SegmentStatus::TooShort).collect();
+    if !too_short.is_empty() && most.map_or(true, |m| m.1 * 2 < sm.len()) {
+        let longest = too_short.iter().map(|g| g.duration()).fold(0.0, f64::max);
+        return Some(NoSelectReason::TooShort { longest, needs: s.min_length as f64 });
+    }
+    most.map(|(name, under, min)| NoSelectReason::Share {
+        score: name.into(),
+        share: ((under as f32 / sm.len() as f32) * 100.0).round() as u32,
+        needs: pts(min).round() as u32,
+    })
+}
+
 /// Footage in, selects out.
 #[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
 pub struct Summary {

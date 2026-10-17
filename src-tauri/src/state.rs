@@ -5,7 +5,7 @@ use selects_engine::project::{FileStatus, ProfileSource, Project, ProjectClip};
 use selects_engine::taste::{report as taste_report, MissReason, TasteReport};
 use selects_engine::tone::{ToneProfile, ALL_PROFILES};
 use selects_engine::rate::{Rate, TIMELINE_RATES};
-use selects_engine::selection::{ClipSelection, SegmentStatus, SelectionSettings, Summary};
+use selects_engine::selection::{no_select_reason, ClipSelection, NoSelectReason, SegmentStatus, SelectionSettings, Summary};
 use serde::Serialize;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -75,6 +75,8 @@ pub struct ClipRow {
     pub used: Vec<(f64, f64)>,
     /// The camera's shutter was far faster than the frame rate suits.
     pub choppy_shutter: bool,
+    /// For an analysed clip with no selects: which score kept it out.
+    pub no_select: Option<NoSelectReason>,
 }
 
 #[derive(Serialize)]
@@ -240,8 +242,9 @@ fn clip_status(
         Some(a) if a.complete => (
             "not_analyzed",
             Some(format!(
-                "Scored at {} per second. Analyse again to use the new sample rate.",
-                a.sample_rate
+                "Scored at {} {} per second. Analyse again to use the new sample rate.",
+                a.sample_rate,
+                if a.sample_rate == 1.0 { "frame" } else { "frames" }
             )),
         ),
         Some(a) if !a.frames.is_empty() => (
@@ -277,7 +280,9 @@ pub fn clip_rows(project: &Project, selections: &[ClipSelection], runner: &Runne
             let choppy_shutter = info
                 .and_then(|i| i.camera.as_ref().and_then(|n| n.shutter_warning(i.rate.fps())))
                 .is_some();
+            let no_select = if status == "analyzed" { no_select_reason(sel, &project.selection) } else { None };
             ClipRow {
+                no_select,
                 profile_label: resolved.profile.label().to_string(),
                 profile_is_log: resolved.profile.is_log(),
                 profile_source: resolved.source,

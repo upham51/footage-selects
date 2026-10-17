@@ -475,15 +475,33 @@ pub async fn open_project(app: AppHandle) -> CmdResult<Option<StateDto>> {
     Ok(Some(state.snapshot()))
 }
 
+/// Where save and export dialogs open: beside the saved project if there is
+/// one, otherwise the Documents folder, so files never land among the
+/// footage by accident.
+pub fn default_save_folder(project_path: Option<&std::path::Path>, documents: Option<PathBuf>) -> Option<PathBuf> {
+    project_path
+        .and_then(|p| p.parent())
+        .filter(|d| !d.as_os_str().is_empty())
+        .map(|d| d.to_path_buf())
+        .or(documents)
+}
+
+fn save_folder(app: &AppHandle) -> Option<PathBuf> {
+    let saved = app.state::<AppState>().project_path.lock().unwrap().clone();
+    default_save_folder(saved.as_deref(), app.path().document_dir().ok())
+}
+
 fn save_to(app: &AppHandle, save_as: bool) -> CmdResult<Option<PathBuf>> {
     let state = app.state::<AppState>();
     let existing = state.project_path.lock().unwrap().clone();
     let path = match (existing, save_as) {
         (Some(p), false) => p,
         _ => {
-            let Some(picked) = app
-                .dialog()
-                .file()
+            let mut dialog = app.dialog().file();
+            if let Some(dir) = save_folder(app) {
+                dialog = dialog.set_directory(dir);
+            }
+            let Some(picked) = dialog
                 .set_title("Save project")
                 .set_file_name(format!("Selects.{PROJECT_EXTENSION}"))
                 .add_filter(format!("{} project", selects_engine::PRODUCT_NAME), &[PROJECT_EXTENSION])
@@ -532,9 +550,11 @@ pub async fn export_timeline(app: AppHandle) -> CmdResult<Option<ExportResult>> 
         .chars()
         .map(|c| if c.is_alphanumeric() || c == ' ' || c == '-' || c == '_' { c } else { '_' })
         .collect();
-    let Some(picked) = app
-        .dialog()
-        .file()
+    let mut dialog = app.dialog().file();
+    if let Some(dir) = save_folder(&app) {
+        dialog = dialog.set_directory(dir);
+    }
+    let Some(picked) = dialog
         .set_title("Export timeline (four files are written side by side)")
         .set_file_name(format!("{}.xml", safe.trim()))
         .blocking_save_file()
@@ -598,5 +618,23 @@ pub async fn tool_check() -> ToolCheck {
         version: v,
         product_name: selects_engine::PRODUCT_NAME,
         product_version: selects_engine::PRODUCT_VERSION,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::default_save_folder;
+    use std::path::{Path, PathBuf};
+
+    #[test]
+    fn dialogs_open_in_documents_until_the_project_is_saved() {
+        let docs = Some(PathBuf::from("/Users/me/Documents"));
+        assert_eq!(default_save_folder(None, docs.clone()), docs);
+        assert_eq!(
+            default_save_folder(Some(Path::new("/Users/me/Projects/trip.selects")), docs.clone()),
+            Some(PathBuf::from("/Users/me/Projects"))
+        );
+        assert_eq!(default_save_folder(Some(Path::new("trip.selects")), docs.clone()), docs);
+        assert_eq!(default_save_folder(None, None), None);
     }
 }
