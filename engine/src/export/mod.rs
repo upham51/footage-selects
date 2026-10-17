@@ -56,6 +56,10 @@ pub struct SelectMeta {
     pub stability: f32,
     pub score: f32,
     pub tier: Tier,
+    /// For log footage: the profile and where the middle tones sit, such as
+    /// "S-Log3, middle tones -0.5 stops".
+    pub exposure_note: Option<String>,
+    pub camera_move: bool,
 }
 
 impl SelectMeta {
@@ -64,14 +68,35 @@ impl SelectMeta {
     }
     /// The marker note: the three scores on a 0 to 100 scale.
     pub fn marker_note(&self) -> String {
-        format!(
+        let mut s = format!(
             "Focus {}, exposure {}, stability {} (overall {}).",
             pct(self.focus),
             pct(self.exposure),
             pct(self.stability),
             pct(self.score)
-        )
+        );
+        if let Some(n) = &self.exposure_note {
+            s.push(' ');
+            s.push_str(n);
+            s.push('.');
+        }
+        if self.camera_move {
+            s.push_str(" Camera move.");
+        }
+        s
     }
+}
+
+/// "S-Log3, middle tones -0.5 stops" for log footage, nothing for standard.
+fn profile_note(profile: crate::tone::ToneProfile, key: Option<f32>) -> Option<String> {
+    if !profile.is_log() {
+        return None;
+    }
+    let label = profile.label();
+    Some(match key {
+        Some(k) => format!("{label}, middle tones {:+.1} stops", k),
+        None => label.to_string(),
+    })
 }
 
 pub fn pct(v: f32) -> i32 {
@@ -171,6 +196,7 @@ pub fn build_timeline(project: &Project, selections: &[ClipSelection]) -> (Timel
     let (mut missing, mut unanalysed, mut partial) = (0, 0, 0);
     for (clip, sel) in project.clips.iter().zip(selections.iter()) {
         let Some(info) = clip.info.clone() else { continue };
+        let profile = clip.resolved_profile(project.fallback_profile).profile;
         match &clip.analysis {
             None => unanalysed += 1,
             Some(a) if !a.complete => partial += 1,
@@ -251,6 +277,8 @@ pub fn build_timeline(project: &Project, selections: &[ClipSelection]) -> (Timel
                     stability: seg.stability,
                     score: seg.score,
                     tier: Tier::from_score(seg.score),
+                    exposure_note: profile_note(profile, seg.key_stops),
+                    camera_move: seg.camera_move,
                 }),
             });
         }

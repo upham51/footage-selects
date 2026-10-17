@@ -20,4 +20,5 @@ pub mod project;
 pub mod scores;
 pub mod selection;
 pub mod sidecar;
+pub mod taste;
 pub mod tone;

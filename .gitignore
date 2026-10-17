@@ -6,3 +6,4 @@ src-tauri/gen/
 engine/tests/fixtures/generated/
 .DS_Store
 dev-bin/
+.claude/worktrees/

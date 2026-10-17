@@ -226,6 +226,8 @@ pub struct Project {
     /// Profile for clips whose file and camera do not say. None means
     /// decide from each clip's tones.
     pub fallback_profile: Option<ToneProfile>,
+    /// Finished videos traced back to these clips, to learn what gets used.
+    pub finished_videos: Vec<crate::taste::FinishedVideo>,
 }
 
 impl Default for Project {
@@ -240,6 +242,7 @@ impl Default for Project {
             clips: Vec::new(),
             next_id: 1,
             fallback_profile: None,
+            finished_videos: Vec::new(),
         }
     }
 }
