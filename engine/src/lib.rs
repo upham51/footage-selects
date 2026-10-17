@@ -7,4 +7,6 @@ pub mod ffmpeg;
 pub mod metrics;
 pub mod probe;
 pub mod rate;
+pub mod project;
 pub mod scores;
+pub mod selection;
