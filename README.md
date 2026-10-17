@@ -18,9 +18,7 @@ A first pass over about two hours of footage takes a few minutes. You then tune 
 
 ## Download
 
-No version has been published yet, so there is nothing to download today. Until the first release is out, the app can only be built from source, as described in [DEVELOPMENT.md](DEVELOPMENT.md).
-
-Once a version is published, go to the [releases page](https://github.com/upham51/footage-selects/releases) and download the file for your computer:
+Go to the [latest release](https://github.com/upham51/footage-selects/releases/latest) and download the file for your computer. No GitHub account is needed.
 
 1. Mac with Apple silicon (M1, M2, M3, M4 or later): the file ending in `mac-apple-silicon.dmg`
 2. Windows: the file ending in `windows-setup.exe`
