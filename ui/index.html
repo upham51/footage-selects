@@ -68,6 +68,22 @@
           <label for="s-cap">Selects per clip</label><output id="o-cap"></output>
           <input type="range" id="s-cap" min="1" max="21" step="1">
         </div>
+        <label class="check">
+          <input type="checkbox" id="keep-moves"> <span>Keep camera moves whole</span>
+        </label>
+        <p class="hint">Long selects are always cut where the camera is still. With this on, one pan or push can run up to twice the longest select instead of being cut in the middle.</p>
+      </div>
+
+      <div class="side-section">
+        <h2 class="eyebrow">Picture profile</h2>
+        <label class="field-label" for="fallback-profile">For clips whose camera does not say</label>
+        <select id="fallback-profile" class="input"></select>
+        <p class="hint" id="profile-hint"></p>
+      </div>
+
+      <div class="side-section" id="taste-section">
+        <h2 class="eyebrow">Learn from your edits</h2>
+        <div id="taste-body"></div>
       </div>
 
       <div class="side-section">

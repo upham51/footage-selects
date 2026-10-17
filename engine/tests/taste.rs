@@ -91,7 +91,7 @@ fn video(name: &str, ranges: &[(u64, f64, f64)]) -> FinishedVideo {
             s
         })
         .collect();
-    FinishedVideo { path: format!("/exports/{name}"), name: name.into(), duration: t, report: MatchReport { shots }, clips_searched: 4 }
+    FinishedVideo { path: format!("/exports/{name}"), name: name.into(), duration: t, report: MatchReport { shots }, clips_searched: 4, print: None }
 }
 
 #[test]

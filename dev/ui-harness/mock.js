@@ -22,9 +22,15 @@
       codec: "h264", has_audio: true, rotation: 0, timecode: null, status: st,
       status_detail: st === "unreadable" ? "This file could not be read as video. The file looks damaged or incomplete, for example a recording that stopped early." : st === "missing" ? "The file is no longer where it was. Its scores are kept, but exports will point to the old location." : null,
       progress: st === "analyzing" ? 0.45 : st === "analyzed" || st === "missing" ? 1 : 0, kept, too_short: 1, over_limit: i % 4 === 0 ? 2 : 0,
+      profile_label: n.startsWith("DJI") ? "DJI D-Log M" : n.startsWith("C0") || n.startsWith("A0") ? "Sony S-Log3" : n.startsWith("IMG") ? "Apple Log" : "Standard (Rec. 709)",
+      profile_is_log: !n.startsWith("GX") && !n.startsWith("proxy"),
+      profile_source: n.startsWith("DJI") || n.startsWith("C0") ? "camera" : n.startsWith("IMG") ? "picture" : n.startsWith("A0") ? "project" : "default",
+      used: i === 1 ? [[dur * 0.3, dur * 0.3 + 4]] : i === 2 ? [[4, 9], [dur * 0.6, dur * 0.6 + 3]] : [],
+      choppy_shutter: n === "DJI_0042.MP4",
     };
   });
-  const sel = { focus_min: .5, exposure_min: .5, stability_min: .5, smoothing: 1, min_length: 2, max_length: 10, max_per_clip: 3 };
+  const sel = { focus_min: .5, exposure_min: .5, stability_min: .5, smoothing: 1, min_length: 2, max_length: 10, max_per_clip: 3, keep_moves_whole: true };
+  const profiles = [["standard", "Standard (Rec. 709)"], ["s_log3", "Sony S-Log3"], ["v_log", "Panasonic V-Log"], ["c_log3", "Canon Log 3"], ["log_c3", "ARRI LogC3"], ["f_log", "Fujifilm F-Log"], ["f_log2", "Fujifilm F-Log2"], ["d_log", "DJI D-Log"], ["d_log_m", "DJI D-Log M"], ["apple_log", "Apple Log"], ["n_log", "Nikon N-Log"], ["hlg", "HLG"], ["generic_log", "Log, curve unknown"]].map(([id, label]) => ({ id, label, approximate: id === "d_log_m" || id === "generic_log" }));
   const rates = [["24000", 1001, "23.976"], [24, 1, "24"], [25, 1, "25"], [30000, 1001, "29.97"], [30, 1, "30"], [50, 1, "50"], [60000, 1001, "59.94"], [60, 1, "60"]].map(([n, d, l]) => ({ num: +n, den: d, label: l, drop_frame_capable: l === "29.97" || l === "59.94" }));
   const totalKept = clips.reduce((a, c) => a + c.kept.length, 0);
   const keptSecs = clips.reduce((a, c) => a + c.kept.reduce((b, k) => b + k.end - k.start, 0), 0);
@@ -35,6 +41,13 @@
     export: { timeline_rate: rates[0], rate_is_auto: true, auto_rate_label: "23.976", drop_frame: false, layout: "full_clips_below", timeline_name: "Day 1 selects", rates, resolution: [1920, 1080] },
     analysis: { running: true, stopping: false, clips_total: 8, clips_done: 4, active: 2, fraction: .58, elapsed: 30, eta_seconds: 22, speed: 61, pending: 0, probing: false },
     project_name: "Day 1", project_path: "/Users/me/Day 1.selects", dirty: true,
+    fallback_profile: "s_log3", profiles,
+    finished_videos: scene === "empty" ? [] : [
+      { name: "Lisbon in 60 seconds.mp4", path: "/Users/me/Exports/Lisbon in 60 seconds.mp4", duration: 61, shots: 24, traced: 21, stale: false },
+      { name: "Lisbon vertical.mov", path: "/Users/me/Exports/Lisbon vertical.mov", duration: 30, shots: 11, traced: 9, stale: true },
+    ],
+    taste: scene === "empty" ? null : { report: { videos: 2, used: 30, kept: 19, clips_used: 17, misses: [["stability", 6], ["too_short", 3], ["over_limit", 2]], selects_seconds: 1100, footage_seconds: 7400 }, miss_words: ["stability under the threshold", "shorter than the shortest select", "over the selects-per-clip limit"] },
+    tracing: scene === "tracing" ? { name: "Porto teaser.mp4", done: 0, total: 2 } : null,
   };
   if (scene === "empty") { state.summary = { clips_total: 0, clips_analyzed: 0, clips_failed: 0, footage_seconds: 0, analyzed_seconds: 0, selects_count: 0, selects_seconds: 0 }; state.analysis.running = false; state.project_name = null; state.project_path = null; state.dirty = false; }
   function detail(id) {
@@ -49,7 +62,7 @@
       d = Math.min(1, Math.max(0, d + (rnd() - .5) * .2 + (i > n * .7 && i < n * .8 ? -.12 : .04)));
       f.push(a); e.push(b); s.push(d);
     }
-    const raw = { t, focus: f, exposure: e, stability: s };
+    const raw = { t, focus: f, exposure: e, stability: s, key_stops: t.map((_, i) => -0.6 + Math.sin(i / 9) * 0.5), clipped: t.map((_, i) => (i > n * .55 && i < n * .6 ? 0.06 : 0)) };
     const sm = (v) => v.map((_, i) => { let x = 0, k = 0; for (let j = Math.max(0, i - 2); j <= Math.min(v.length - 1, i + 2); j++) { x += v[j]; k++; } return x / k; });
     const smoothed = { t, focus: sm(f), exposure: sm(e), stability: sm(s) };
     const segs = []; let i = 0;
@@ -58,13 +71,19 @@
       let j = i; while (j + 1 < n && (smoothed.focus[j + 1] >= .5 && smoothed.exposure[j + 1] >= .5 && smoothed.stability[j + 1] >= .5) === pass) j++;
       const start = i / 4, end = Math.min(c.duration, (j + 1) / 4);
       const failed = pass ? [] : ["focus", "exposure", "stability"].filter((k) => smoothed[k].slice(i, j + 1).some((v) => v < .5));
-      segs.push({ start, end, status: pass ? (end - start < 2 ? "too_short" : "kept") : "below_threshold", focus: .7, exposure: .8, stability: .6, score: .7, failed });
+      segs.push({ start, end, status: pass ? (end - start < 2 ? "too_short" : "kept") : "below_threshold", focus: .7, exposure: .8, stability: .6, score: .7, failed,
+        exposure_issue: failed.includes("exposure") ? "clipped_highlights" : null, key_stops: -0.4 + rnd() * 0.8, camera_move: segs.length === 1 });
       i = j + 1;
     }
     let keptSeen = 0; for (const g of segs) if (g.status === "kept") { keptSeen++; if (keptSeen > 3) g.status = "over_limit"; }
     return { id, name: c.name, path: c.path, duration: c.duration, measured_until: c.status === "analyzing" ? c.duration * .45 : c.duration,
       info: { duration: c.duration, width: c.width, height: c.height, rotation: 0, rate: { num: 24000, den: 1001 }, variable_frame_rate: false, codec: "h264", has_audio: true, audio_channels: 2, timecode: "01:02:10:04" },
-      raw, smoothed, segments: segs, selection: sel, sample_rate: 4, decoder: "hardware when available", analysis_seconds: 1.8 };
+      raw, smoothed, segments: segs, selection: sel, sample_rate: 4, decoder: "hardware when available", analysis_seconds: 1.8,
+      profile: { profile: "d_log_m", source: "camera", explanation: "Named by the camera's file DJI_0042.SRT." }, chosen_profile: null,
+      camera_profile: "DJI D-Log M, named by the camera's file DJI_0042.SRT",
+      camera: { source: "DJI_0042.SRT", camera: "DJI", lens: null, picture_profile: "dlog_m", iso: 100, shutter: 1 / 2000, aperture: 1.7, latitude: 38.71223, longitude: -9.13934, max_height: 84 },
+      shutter_warning: "Shutter 1/2000 at 24 fps (about 4 degrees). Movement in this clip will look choppy; 1/48 is the usual choice. An ND filter lets you keep the slower shutter in bright light.",
+      used: c.used.map(([a, b]) => [a, b, "Lisbon in 60 seconds.mp4"]) };
   }
   window.__TAURI__ = {
     core: {
@@ -76,6 +95,7 @@
         if (cmd === "check_for_update") { await new Promise((r) => setTimeout(r, 600)); if (scene === "error") throw "The app could not reach GitHub to check for a newer version. Nothing was changed. Check your internet connection and try again."; return { configured: true, current_version: "0.1.0", available: scene === "update" ? "0.2.0" : null, notes: null }; }
         if (cmd === "clip_detail") return detail(args.id);
         if (cmd === "set_selection") { Object.assign(sel, args.selection); return state; }
+        if (cmd === "fit_to_finished_videos") { await new Promise((r) => setTimeout(r, 400)); return { settings: { ...sel, stability_min: 0.35, min_length: 1.5 }, before: state.taste.report, after: { ...state.taste.report, kept: 27, selects_seconds: 1290 }, held_out_kept_share: 0.82, held_out_before_share: 0.63 }; }
         return state;
       },
     },
@@ -84,5 +104,6 @@
   };
   window.__mockEmit = (name, payload) => (listeners[name] || []).forEach((fn) => fn({ payload }));
   if (scene === "probing") setTimeout(() => window.__mockEmit("probe-progress", { done: 40, total: 170 }), 50);
-  if (scene === "detail") setTimeout(() => document.querySelector('tr[data-clip="2"]')?.click(), 300);
+  if (scene === "detail") setTimeout(() => document.querySelector('tr[data-clip="3"]')?.click(), 300);
+  if (scene === "fit") setTimeout(() => document.querySelector('[data-act="fit"]')?.click(), 300);
 })();

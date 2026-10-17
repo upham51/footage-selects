@@ -30,6 +30,10 @@ pub struct FinishedVideo {
     /// after adding footage can find more shots.
     #[serde(default)]
     pub clips_searched: usize,
+    /// The video's fingerprints, kept so it can be traced again in a moment
+    /// when footage is added, without decoding the video again.
+    #[serde(default)]
+    pub print: Option<ReferencePrint>,
 }
 
 impl FinishedVideo {
@@ -66,7 +70,28 @@ pub fn trace(project: &Project, print: &ReferencePrint) -> FinishedVideo {
         duration: print.duration,
         report,
         clips_searched: views.len(),
+        print: Some(print.clone()),
     }
+}
+
+/// Trace every finished video again against the clips analysed now.
+pub fn retrace_all(project: &mut Project) {
+    let prints: Vec<Option<ReferencePrint>> = project.finished_videos.iter().map(|f| f.print.clone()).collect();
+    for (i, p) in prints.into_iter().enumerate() {
+        if let Some(p) = p {
+            let fresh = trace(project, &p);
+            project.finished_videos[i] = fresh;
+        }
+    }
+}
+
+/// Number of clips with fingerprints that a trace would search now.
+pub fn clips_with_prints(project: &Project) -> usize {
+    project
+        .clips
+        .iter()
+        .filter(|c| c.analysis.as_ref().map(|a| !a.frames.is_empty() && a.frames.fp.len() == a.frames.len()).unwrap_or(false))
+        .count()
 }
 
 /// One moment a finished video used, on a source clip.

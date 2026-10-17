@@ -2,7 +2,7 @@
 
 ## Layout
 
-1. `engine/`: the Rust library that does all the work. Probing (`probe.rs`), sampled decoding through ffmpeg (`analyze.rs`), per-frame measurements (`metrics.rs`), scores (`scores.rs`), selection (`selection.rs`), the project file (`project.rs`), timecode (`rate.rs`) and the four export writers (`export/`).
+1. `engine/`: the Rust library that does all the work. Probing (`probe.rs`), sampled decoding through ffmpeg (`analyze.rs`), per-frame measurements (`metrics.rs`), scores (`scores.rs`), selection (`selection.rs`), the project file (`project.rs`), timecode (`rate.rs`) and the four export writers (`export/`). Also: picture profiles and log curves (`tone.rs`), camera sidecar files (`sidecar.rs`), picture fingerprints (`fingerprint.rs`), finished-video decoding (`reference.rs`) and tracing (`matching.rs`), and learning from finished videos (`taste.rs`).
 2. `src-tauri/`: the Tauri v2 desktop shell. Commands the window calls (`commands.rs`), the parallel analysis workers (`runner.rs`) and the snapshots sent to the window (`state.rs`).
 3. `ui/`: the window itself, plain HTML, CSS and JavaScript with no build step. It talks to Rust through Tauri's global API.
 4. `dev/ui-harness/`: opens the window in an ordinary browser with a fake Rust side, for working on the interface. Open `dev/ui-harness/index.html?scene=list` (also `detail`, `empty`, `loading`, `error`, `probing`). Regenerate its `index.html` from `ui/index.html` if the markup changes.
@@ -14,6 +14,12 @@
 ffmpeg decodes each clip, skipping non-reference frames at the decoder, keeps the first frame in each sample interval with its real timestamp, downsizes it to about 480 pixels wide in grayscale and pipes raw pixels to the engine. On macOS it first tries VideoToolbox with dropping and downsizing on the GPU, then VideoToolbox with frames copied back, then software. Elsewhere it tries ffmpeg's automatic hardware decoding, then software.
 
 Per frame the engine measures the variance of the Laplacian (focus), a luma histogram (clipped highlights, crushed shadows, the 2nd to 98th percentile spread, mean level), and global translation from the previous sample by coarse-to-fine block matching on an image pyramid. Stability compares each sample's motion with the average of its neighbours, so steady movement scores well and jitter does not. Raw measurements are cached in the project; scores and selection are recomputed from them on demand.
+
+Each frame also stores a ladder of luma percentiles (1, 2, 5, 10, 25, 50, 75, 90, 95, 98 and 99%), the brightest value and the share of pixels within one level of it, and three 64-bit difference hashes (whole frame, centred 2.39:1, centred 9:16). The analysis picture is grayscale with video black at 0 and white at 255, so a luma maps exactly back to a 10-bit code value. Because tone curves are monotonic, the ladder can be mapped through any log curve later, which is how a profile change rescores without decoding: `tone::StopsTable` turns luma into stops from middle grey with the maker's published formula, and `tone::log_exposure` scores clipping (a pile-up at the top of the curve), underexposure, deep shadows and very flat light. The profile is resolved per clip in `ProjectClip::resolved_profile`: chosen for the clip, then named by the camera (`sidecar.rs` reads Sony `M01.XML` and DJI `.SRT`, `probe.rs` reads HLG tags), then the project's fallback, then `tone::looks_like_log`, then standard.
+
+Selection cuts long runs with a small dynamic program (`selection::split_at_rest`): cutting where the camera moves costs much more than cutting where it is still, uneven parts cost a little, and with `keep_moves_whole` a part up to twice the maximum is allowed when the camera moves through most of it.
+
+Finished videos are decoded at 6 samples per second with letterbox bars trimmed and flat frames skipped (`reference.rs`), split into shots at hash jumps, and each shot is fitted to a clip as source time = a + b times finished time, which covers slow motion and speed-ups (`matching.rs`). `taste.rs` counts how many traced shots the settings keep and fits the sliders by coordinate search, checking on each video with settings learned from the others when there are two or more.
 
 ## Running it
 

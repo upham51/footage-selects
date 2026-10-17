@@ -37,6 +37,8 @@ pub fn plugin<R: Runtime>() -> Option<tauri::plugin::TauriPlugin<R, tauri_plugin
 pub struct Settings {
     /// Check for a new version each time the app opens. Off unless turned on.
     pub check_updates_on_open: bool,
+    /// Picture profile for clips whose camera does not say, used for new projects.
+    pub fallback_profile: Option<selects_engine::tone::ToneProfile>,
 }
 
 impl Settings {
@@ -56,7 +58,7 @@ impl Settings {
     }
 }
 
-fn settings_path<R: Runtime>(app: &AppHandle<R>) -> Option<PathBuf> {
+pub fn settings_path<R: Runtime>(app: &AppHandle<R>) -> Option<PathBuf> {
     app.path().app_config_dir().ok().map(|d| d.join("settings.json"))
 }
 
@@ -161,7 +163,7 @@ mod tests {
     fn settings_round_trip_and_survive_damage() {
         let dir = std::env::temp_dir().join(format!("updates-test-rt-{}", std::process::id()));
         let path = dir.join("settings.json");
-        Settings { check_updates_on_open: true }.save(&path).unwrap();
+        Settings { check_updates_on_open: true, ..Default::default() }.save(&path).unwrap();
         assert!(Settings::load(&path).check_updates_on_open);
         std::fs::write(&path, "{ not json").unwrap();
         assert_eq!(Settings::load(&path), Settings::default());

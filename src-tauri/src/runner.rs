@@ -184,6 +184,12 @@ fn worker(app: AppHandle) {
         }
     };
     if last {
+        // Newly analysed clips may hold shots from the finished videos.
+        let mut p = state.project.lock().unwrap();
+        if !p.finished_videos.is_empty() {
+            selects_engine::taste::retrace_all(&mut p);
+        }
+        drop(p);
         let _ = app.emit(EVENT_STATE, ());
     }
 }
