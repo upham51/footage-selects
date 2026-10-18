@@ -78,7 +78,19 @@ test("the demo video slot shows the video from config, escaped, and allows its h
   const v = pageValues({ ...config, demoVideo: { src: "https://media.example/demo.mp4", poster: "", caption: 'Two "minutes"' } }, "N");
   assert.match(v.demoHtml, /<video class="demo-video" controls preload="metadata" playsinline src="https:\/\/media\.example\/demo\.mp4">/);
   assert.match(v.demoHtml, /Two &quot;minutes&quot;/);
-  assert.match(v.csp, /media-src 'self' https:\/\/media\.example/);
+  assert.match(v.csp, /media-src 'self' https:\/\/videos\.pexels\.com https:\/\/media\.example/);
+});
+
+test("the page's own clips and photos come only from the hosts the policy allows", () => {
+  const csp = pageValues(config, "N").csp;
+  const html = site("index.html") + site("landing.js");
+  for (const url of html.match(/https:\/\/[a-z0-9.-]+/g) || []) {
+    const origin = new URL(url).origin;
+    if (origin === "https://challenges.cloudflare.com") continue;
+    assert.ok(csp.includes(origin), `${origin} is used by the page but not allowed by the policy`);
+  }
+  assert.match(csp, /style-src 'self';/, "no inline styles are allowed");
+  assert.doesNotMatch(site("index.html"), /\sstyle="/, "index.html has no inline style attributes");
 });
 
 test("visitors without JavaScript see the result of their signup", async () => {
