@@ -784,6 +784,36 @@ fn a_reel_fills_every_slot_on_the_beat_with_the_song_under_it() {
 }
 
 #[test]
+fn a_reel_has_no_sliver_of_a_shot_at_either_end() {
+    use selects_engine::reel::{plan, Pace, ReelOrder, ReelSettings};
+    let (p, sels) = reel_project();
+    let music = selects_engine::beats::MusicInfo { path: "/m.wav".into(), name: "m.wav".into(), duration: 60.0, sample_rate: 48000, channels: 2, codec: "pcm".into() };
+    let scenes = selects_engine::scene::resolve(&p);
+    // The tester's case: 143.6 BPM with the first bar 0.1 s in, a cut every
+    // beat, 30 s. Also every bar, and a first bar a little later.
+    for (offset, pace) in [(0.1, Pace::EveryBeat), (0.1, Pace::EveryBar), (0.3, Pace::EveryTwoBeats), (0.25, Pace::EveryBeat)] {
+        let mut g = grid(143.6, 60.0);
+        for b in g.beats.iter_mut() {
+            *b += offset;
+        }
+        let beat = 60.0 / 143.6;
+        let settings = ReelSettings { music: Some(music.clone()), grid: Some(g.clone()), pace, length: Some(30.0), order: ReelOrder::BestFirst, ..Default::default() };
+        let r = plan(&p, &sels, &scenes, &settings).unwrap();
+        let shortest = r.shots.iter().map(|s| s.length).fold(f64::MAX, f64::min);
+        assert!(shortest >= 0.5 * beat, "{pace:?} at {offset}: a shot of {shortest:.3} s");
+        assert_eq!(r.shots[0].at, 0.0);
+        assert!(r.length <= 30.0 + 1e-9);
+        // Every cut after the start is on a beat of the song.
+        for s in &r.shots[1..] {
+            assert!(g.beats.iter().any(|b| (b - s.at).abs() < 1e-9), "{pace:?}: cut at {} is off the beat", s.at);
+        }
+        for w in r.shots.windows(2) {
+            assert!((w[0].at + w[0].length - w[1].at).abs() < 1e-9);
+        }
+    }
+}
+
+#[test]
 fn as_shot_reels_keep_recording_order() {
     use selects_engine::reel::{plan, Pace, ReelOrder, ReelSettings};
     let (mut p, sels) = reel_project();
