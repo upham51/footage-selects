@@ -1,3 +1,13 @@
+Fixed in 0.2.2:
+
+1. Jello: a fast, small wobble is now caught, and calm footage, pans and water no longer come near the line.
+2. Flicker: moving things in part of the frame no longer read as light flicker. Real flicker bands are caught more reliably.
+3. Wind: a clip needs clearer evidence to be called windy. Set aside selects with sound problems now keeps a light breeze and sets aside only clipped sound, dropouts and strong wind.
+4. Talking: synthetic and text to speech voices are recognised.
+5. White balance: overcast sky, fog and haze no longer make a clip read as a different camera setting.
+
+Clips are measured once more after opening a project from an earlier version, so the picture checks can use the new measurements.
+
 This app pulls a first pass of selects from raw footage using classical image math. It runs fully offline.
 
 Fixed in 0.2.1, from testing on a real shoot:

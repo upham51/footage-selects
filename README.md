@@ -101,7 +101,7 @@ Under Filters:
 2. Set aside repeated takes: finds selects that look like a better select in another clip, such as a second take from the same tripod spot, and keeps only the best one. A clip whose select is set aside this way can use its next best stretch instead, within the selects per clip limit. Even with this off, the side panel says how many selects look like another, and the clip view names the clip and moment each one looks like. It only compares different clips, so the parts of one long shot are never called repeats of each other.
 
 3. Light: Any, Golden hour, Blue hour, Daylight or Night. Only footage shot in that light is kept; the rest, and clips whose light is not known, are set aside. Stretches you kept by hand stay whatever this filter or the sound filter says, and the panel counts them. See Light, scenes and places below.
-4. Set aside selects with sound problems: keeps only selects whose sound is clean. Wind noise, distorted (clipped) sound and dropouts are always listed whether or not this is ticked; tick it when you will use the sound.
+4. Set aside selects with sound problems: keeps only selects whose sound is usable. It sets aside selects with distorted (clipped) sound, a dropout, or strong wind over most of the select. A light breeze is listed on the select but kept. All of these are listed whether or not this is ticked; tick it when you will use the sound.
 
 Reset to defaults puts every slider back where it started and turns the filters off.
 
@@ -160,7 +160,7 @@ Each clip's sound is read alongside its picture. The clip view says whether some
 2. Sound clipped: the recording level was too high and the sound distorts.
 3. Sound drops out: the sound cuts to silence and comes back, usually a wireless mic losing its link or a loose cable.
 
-A lane under the clip's graphs shows where someone talks. The list shows a Talking tag and a pill for each problem. Talking is found from loudness and the rise and fall of syllables, not from understanding words, so a rhythmic vocal in music can read as talking and a whisper can be missed.
+A lane under the clip's graphs shows where someone talks. The list shows a Talking tag and a pill for each problem. Talking is found from loudness and the rise and fall of syllables, not from understanding words, so a rhythmic vocal in music can read as talking and a whisper can be missed. Synthetic voices, such as a text to speech narrator, are recognised too.
 
 ## Light, scenes and places
 

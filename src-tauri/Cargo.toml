@@ -1,6 +1,6 @@
 [package]
 name = "footage-selects"
-version = "0.2.1"
+version = "0.2.2"
 edition = "2021"
 description = "Pulls selects from raw footage with classical image math, fully offline"
 publish = false

@@ -50,8 +50,14 @@
 //! clearly above the floor, or close to the loud part of the clip for clips
 //! that never go quiet (a steady tone throughout counts as sound present).
 //!
-//! Talking (see `talking`): sound present, at least 40% of the window's
-//! energy in the voice band, and the loudness envelope dips at syllable rate.
+//! Talking (see `talking`): sound present, a voice in the window, and the
+//! loudness envelope dipping at syllable rate. A voice means at least 40% of
+//! the window's energy in the voice band, or, for voices whose energy sits
+//! mostly at the fundamental below 300 Hz (synthetic voices such as ffmpeg's
+//! flite, some deep or close voices), at least 15% there with at most half
+//! below 150 Hz while the spectral balance keeps changing: an average change
+//! of the voice and low shares of at least 0.09 from one window to the next
+//! over 0.75 s either way, which a melody, a tone, surf or footsteps do not reach.
 //! A dip is a window whose level is at least 6 dB below the loudest window
 //! within 0.3 s on both sides, so the envelope rises and falls at 2 Hz or
 //! faster; talking needs 2 or more dips within 0.75 s either way. Steady
@@ -61,13 +67,16 @@
 //! are dropped. A clip has speech when talking covers over 10% of it and at
 //! least 1.5 s.
 //!
-//! Wind (see `wind`): sound present, at least 60% of the energy below
-//! 150 Hz, and an erratic level. In stereo, when the channels' low bands
-//! correlate below 0.5 over about half a second, a level spread of 1 dB over
-//! a second is enough. Otherwise (mono, dual mono, or coherent stereo) it
-//! needs a 2.5 dB spread, since steady bass, traffic hum and a bass tone
-//! vary much less than gusts. Gaps of up to 0.5 s are filled and runs under
-//! 0.2 s dropped.
+//! Wind (see `wind`): sound present, at least 60% of the window's energy
+//! below 150 Hz and 75% on average over a second around it, and an erratic
+//! level. In stereo, when the channels' low bands correlate below 0.5 over
+//! about half a second, a level spread of 1.5 dB over a second is enough.
+//! Otherwise (mono, dual mono, or coherent stereo) it needs a 3 dB spread,
+//! since steady bass, traffic hum and a bass tone vary much less than gusts.
+//! Gaps of up to 0.5 s are filled and runs under 1 s dropped. A select is
+//! noted for wind when wind covers 40% of it. Strong wind (`bad_sound_in`)
+//! also needs half of the select and a median level of -30 dBFS or louder;
+//! only strong wind, clipping and dropouts set selects aside.
 //!
 //! Dropouts (see `dropouts`): only in clips whose median level is above
 //! -55 dBFS. Either 0.1 s or more of near digital silence (below -75 dBFS
@@ -78,8 +87,8 @@
 //!
 //! # Known limits
 //!
-//! Rhythmic music in the voice band (a vocal line, a drum loop) can read as
-//! talking. Whispering and very distant speech may sit too close to the floor
+//! Rhythmic music in the voice band (a vocal line, a plucked melody, a drum
+//! loop) and birdsong sweeping through the band can read as talking. Whispering and very distant speech may sit too close to the floor
 //! to count. Wind in mono that blows steadily without gusts is missed, and
 //! loud gusting bass music in mono can read as wind. Tracks that go to
 //! digital silence for more than a tenth of their length (a noise gate,
@@ -715,8 +724,22 @@ fn clamped_levels(t: &AudioTable, s: &LevelStats) -> Vec<f32> {
     (0..t.len()).map(|i| t.level_db(i).max(lo)).collect()
 }
 
-/// Talking windows before gap filling.
+/// Talking windows before gap filling: at least this share of the energy in
+/// the voice band, or `TALK_VOICE_SOME` there with at most `TALK_LOW_MAX`
+/// below 150 Hz and a changing spectral balance (`TALK_FLUX`).
 const TALK_VOICE_SHARE: f32 = 0.4;
+/// Voices whose fundamental and lowest harmonics (150 to 300 Hz) carry most
+/// of the energy, as synthetic voices and some deep or close-miked ones do,
+/// put only 15 to 30% in the 300 to 3400 Hz band.
+const TALK_VOICE_SOME: f32 = 0.15;
+const TALK_LOW_MAX: f32 = 0.5;
+/// Smallest average change in the spectral balance (voice and low shares)
+/// from one window to the next, over 0.75 s each side, for the weaker voice
+/// band test. Speech moves between vowels, consonants and breaths every few
+/// windows (flite's voices average 0.10 to 0.16); a melody, a steady tone,
+/// surf, footsteps or noise keep their balance even when the level pulses
+/// (0.00 to 0.05).
+const TALK_FLUX: f32 = 0.09;
 const DIP_DB: f32 = 6.0;
 /// 0.3 s each side for a dip's surrounding peaks.
 const DIP_REACH: usize = 6;
@@ -747,11 +770,27 @@ pub fn talking(t: &AudioTable) -> Vec<bool> {
         }
         dip_prefix[i + 1] = dip_prefix[i] + dip as usize;
     }
+    // Change of spectral balance between consecutive windows with sound,
+    // as prefix sums of the change and of the pairs counted.
+    let present: Vec<bool> = (0..n).map(|i| t.level_db(i) > thr).collect();
+    let mut flux_sum = vec![0f32; n + 1];
+    let mut flux_cnt = vec![0u32; n + 1];
+    for i in 0..n {
+        let pair = i > 0 && present[i] && present[i - 1];
+        let change = if pair { (t.voice_share(i) - t.voice_share(i - 1)).abs() + (t.low_share(i) - t.low_share(i - 1)).abs() } else { 0.0 };
+        flux_sum[i + 1] = flux_sum[i] + change;
+        flux_cnt[i + 1] = flux_cnt[i] + pair as u32;
+    }
     let mut v: Vec<bool> = (0..n)
         .map(|i| {
             let a = i.saturating_sub(DIP_SPAN);
             let b = (i + DIP_SPAN + 1).min(n);
-            t.level_db(i) > thr && t.voice_share(i) >= TALK_VOICE_SHARE && dip_prefix[b] - dip_prefix[a] >= TALK_MIN_DIPS
+            let (voice, low) = (t.voice_share(i), t.low_share(i));
+            // Pairs whose later window lies in a+1..b, so both lie in a..b.
+            let pairs = flux_cnt[b] - flux_cnt[(a + 1).min(b)];
+            let changing = || pairs > 0 && (flux_sum[b] - flux_sum[(a + 1).min(b)]) / pairs as f32 >= TALK_FLUX;
+            let voiced = voice >= TALK_VOICE_SHARE || (voice >= TALK_VOICE_SOME && low <= TALK_LOW_MAX && changing());
+            present[i] && voiced && dip_prefix[b] - dip_prefix[a] >= TALK_MIN_DIPS
         })
         .collect();
     tidy_runs(&mut v, TALK_GAP, TALK_MIN_RUN);
@@ -798,16 +837,21 @@ pub fn talk_share_in(t: &AudioTable, start: f64, end: f64) -> f32 {
 }
 
 const WIND_LOW_SHARE: f32 = 0.6;
+/// Average share below 150 Hz over the windows with sound within
+/// `WIND_SPREAD_SPAN`: gusts carry nearly all their energy there, while surf,
+/// traffic or a voice over a breeze keep a good part above it.
+const WIND_LOW_AVERAGE: f32 = 0.75;
 /// Below this low band correlation, stereo counts as incoherent.
 const WIND_INCOHERENT: f32 = 0.5;
-const WIND_SPREAD_STEREO: f32 = 1.0;
-const WIND_SPREAD_MONO: f32 = 2.5;
+const WIND_SPREAD_STEREO: f32 = 1.5;
+const WIND_SPREAD_MONO: f32 = 3.0;
 /// 0.5 s each side for the level spread.
 const WIND_SPREAD_SPAN: usize = 10;
 /// About 0.25 s each side for the correlation.
 const WIND_CORR_SPAN: usize = 5;
 const WIND_GAP: usize = 10;
-const WIND_MIN_RUN: usize = 4;
+/// Wind has to last a second; shorter bursts are bumps and handling noise.
+const WIND_MIN_RUN: usize = 20;
 
 /// Per window: wind noise.
 pub fn wind(t: &AudioTable) -> Vec<bool> {
@@ -821,10 +865,15 @@ pub fn wind(t: &AudioTable) -> Vec<bool> {
     let mut sum = vec![0.0f64; n + 1];
     let mut sq = vec![0.0f64; n + 1];
     let mut corr = vec![0.0f64; n + 1];
+    let mut low = vec![0.0f64; n + 1];
+    let mut present = vec![0usize; n + 1];
     for i in 0..n {
         sum[i + 1] = sum[i] + e[i];
         sq[i + 1] = sq[i] + e[i] * e[i];
         corr[i + 1] = corr[i] + t.low_correlation(i) as f64;
+        let here = t.level_db(i) > thr;
+        low[i + 1] = low[i] + if here { t.low_share(i) as f64 } else { 0.0 };
+        present[i + 1] = present[i] + here as usize;
     }
     let stereo = t.channels >= 2;
     let mut v: Vec<bool> = (0..n)
@@ -834,6 +883,9 @@ pub fn wind(t: &AudioTable) -> Vec<bool> {
             }
             let a = i.saturating_sub(WIND_SPREAD_SPAN);
             let b = (i + WIND_SPREAD_SPAN + 1).min(n);
+            if ((low[b] - low[a]) / (present[b] - present[a]).max(1) as f64) < WIND_LOW_AVERAGE as f64 {
+                return false;
+            }
             let m = (b - a) as f64;
             let mean = (sum[b] - sum[a]) / m;
             let spread = ((sq[b] - sq[a]) / m - mean * mean).max(0.0).sqrt() as f32;
@@ -937,11 +989,17 @@ pub fn summarize(t: &AudioTable) -> AudioSummary {
 }
 
 /// Share of a range that must have wind before it is reported.
-pub const WIND_REPORT_SHARE: f32 = 0.25;
+pub const WIND_REPORT_SHARE: f32 = 0.4;
+/// Wind counts as strong, bad enough to set a select aside, when it covers at
+/// least this share of the range and its windows have a median level of
+/// `STRONG_WIND_DB` or louder. A light breeze rumbling well below the scene's
+/// sound is reported but does not set selects aside.
+pub const STRONG_WIND_SHARE: f32 = 0.5;
+pub const STRONG_WIND_DB: f32 = -30.0;
 
 /// Sound problems inside start..end, most important first, each listed once:
 /// any dropout overlapping the range, any clipping event, and wind over at
-/// least a quarter of it.
+/// least 40% of it.
 pub fn issues_in(t: &AudioTable, start: f64, end: f64) -> Vec<AudioIssue> {
     let (a, b) = t.window_range(start, end);
     let mut out = Vec::new();
@@ -959,6 +1017,27 @@ pub fn issues_in(t: &AudioTable, start: f64, end: f64) -> Vec<AudioIssue> {
         out.push(AudioIssue::Wind);
     }
     out
+}
+
+/// Whether the sound inside start..end is bad enough to set a select aside
+/// when people will use it: a dropout, clipping, or strong wind (see
+/// `STRONG_WIND_SHARE`). A mild wind note alone is not.
+pub fn bad_sound_in(t: &AudioTable, start: f64, end: f64) -> bool {
+    let issues = issues_in(t, start, end);
+    if issues.contains(&AudioIssue::Dropout) || issues.contains(&AudioIssue::Clipped) {
+        return true;
+    }
+    if !issues.contains(&AudioIssue::Wind) {
+        return false;
+    }
+    let (a, b) = t.window_range(start, end);
+    let w = wind(t);
+    let mut levels: Vec<f32> = (a..b).filter(|&i| w[i]).map(|i| t.level_db(i)).collect();
+    if (levels.len() as f32) < STRONG_WIND_SHARE * (b - a) as f32 {
+        return false;
+    }
+    levels.sort_by(|x, y| x.partial_cmp(y).unwrap_or(std::cmp::Ordering::Equal));
+    levels[levels.len() / 2] >= STRONG_WIND_DB
 }
 
 #[cfg(test)]
@@ -1166,6 +1245,81 @@ mod tests {
         }
     }
 
+    /// Speech like ffmpeg's flite voices: most of each syllable's energy in
+    /// its fundamental (160 to 220 Hz) and weak formants, with short hissy
+    /// consonants between some syllables, in phrases separated by silence.
+    fn fundamental_heavy_speech(seed: u64, secs: f32) -> Vec<f32> {
+        let mut rng = Rng(seed);
+        let n = (secs * SR as f32) as usize;
+        let mut out: Vec<f32> = (0..n).map(|_| rng.noise() * 0.0005).collect();
+        let mut hiss = Biquad::highpass(3000.0, SR as f64, 0.7);
+        let mut t = 0.5f32;
+        while t < secs - 1.0 {
+            let phrase_end = (t + rng.range(1.5, 3.0)).min(secs - 0.5);
+            while t < phrase_end - 0.1 {
+                let dur = rng.range(0.12, 0.22);
+                let f0 = rng.range(160.0, 220.0);
+                let amp = rng.range(0.08, 0.2);
+                let a = (t * SR as f32) as usize;
+                let len = (dur * SR as f32) as usize;
+                for k in 0..len.min(n - a) {
+                    let tt = k as f32 / SR as f32;
+                    let env = 0.5 - 0.5 * (2.0 * PI * k as f32 / len as f32).cos();
+                    let mut v = (2.0 * PI * f0 * tt).sin();
+                    for h in 2..12 {
+                        let f = h as f32 * f0;
+                        v += 0.4 / h as f32 * (1.0 + 2.0 * (-((f - 700.0) / 300.0).powi(2)).exp()) * (2.0 * PI * f * tt).sin();
+                    }
+                    out[a + k] += amp * env * v * 0.5;
+                }
+                t += dur + rng.range(0.03, 0.08);
+                if rng.next() < 0.5 {
+                    // A consonant: 60 to 100 ms of hiss.
+                    let len = (rng.range(0.06, 0.1) * SR as f32) as usize;
+                    let a = (t * SR as f32) as usize;
+                    for k in 0..len.min(n - a) {
+                        out[a + k] += 0.05 * hiss.run(rng.noise() as f64) as f32;
+                    }
+                    t += len as f32 / SR as f32 + 0.03;
+                }
+            }
+            t += rng.range(0.6, 1.0);
+        }
+        out
+    }
+
+    #[test]
+    fn audio_fundamental_heavy_speech_is_talking_and_a_pulsing_note_is_not() {
+        for seed in [3u64, 21, 777] {
+            let v = fundamental_heavy_speech(seed, 20.0);
+            let t = analyze_samples(&interleave(&v, &v), 2, SR);
+            let loud: Vec<usize> = (0..t.len()).filter(|&i| t.level_db(i) > -40.0).collect();
+            let voice = loud.iter().map(|&i| t.voice_share(i)).sum::<f32>() / loud.len() as f32;
+            let s = summarize(&t);
+            println!("audio fundamental heavy speech seed {seed}: voice band share {voice:.2}, talking {:.2}", s.talk_share);
+            // Below the 40% the plain voice band test needs, as flite's voices are.
+            assert!(voice < 0.4, "seed {seed}: {voice}");
+            // Phrases of 1.5 to 3 s with pauses of 0.6 to 1 s: about half is talking.
+            assert!(s.has_speech && s.talk_share > 0.3, "seed {seed}: {s:?}");
+            assert!(issues_in(&t, 0.0, 20.0).is_empty(), "seed {seed}: {:?}", issues_in(&t, 0.0, 20.0));
+        }
+        // A low note plucked three times a second: the level dips like
+        // syllables and the fundamental dominates (under 40% in the voice
+        // band, like the speech above), but the balance hardly changes.
+        let n = 10 * SR as usize;
+        let note: Vec<f32> = (0..n)
+            .map(|i| {
+                let t = i as f32 / SR as f32;
+                let env = (-6.0 * (t * 3.0).fract()).exp();
+                let f0 = [165.0, 185.0, 196.0][((t * 3.0) as usize / 2) % 3];
+                0.3 * env * ((2.0 * PI * f0 * t).sin() + 0.3 * (4.0 * PI * f0 * t).sin() + 0.2 * (6.0 * PI * f0 * t).sin())
+            })
+            .collect();
+        let s = summarize(&analyze_samples(&note, 1, SR));
+        println!("audio plucked low note: talking {:.2}", s.talk_share);
+        assert!(!s.has_speech && s.talk_share < 0.05, "{s:?}");
+    }
+
     #[test]
     fn audio_wind_is_flagged_and_bass_is_not() {
         let secs = 8.0;
@@ -1179,9 +1333,10 @@ mod tests {
         let mean_corr: f32 = (0..t.len()).map(|i| t.low_correlation(i)).sum::<f32>() / t.len() as f32;
         assert!(mean_corr.abs() < 0.3, "{mean_corr}");
 
-        // Mono wind relies on the gusts.
+        // Mono wind relies on the gusts; the quiet spells between them, where
+        // the level barely moves, are not called wind.
         let t = analyze_samples(&l, 1, SR);
-        assert!(summarize(&t).wind_share > 0.5, "{:?}", summarize(&t));
+        assert!(summarize(&t).wind_share > 0.35, "{:?}", summarize(&t));
 
         // A bass tone reaching both channels, slowly swelling, is not wind.
         let n = (secs * SR as f32) as usize;
@@ -1198,6 +1353,50 @@ mod tests {
         assert!(t.low_correlation(40) > 0.95);
         let t = analyze_samples(&bass, 1, SR);
         assert_eq!(summarize(&t).wind_share, 0.0);
+    }
+
+    #[test]
+    fn audio_wind_needs_clear_evidence_and_only_strong_wind_is_bad() {
+        let secs = 12.0;
+        let (l, r) = (wind_channel(3, secs), wind_channel(4, secs));
+        let scaled = |v: &[f32], k: f32| v.iter().map(|x| x * k).collect::<Vec<f32>>();
+        let low_average = |t: &AudioTable| (0..t.len()).map(|i| t.low_share(i)).sum::<f32>() / t.len() as f32;
+
+        // Loud gusts: wind, and bad enough to set a select aside.
+        let t = analyze_samples(&interleave(&l, &r), 2, SR);
+        let s = summarize(&t);
+        println!("audio loud wind: share {:.2}, median {:.1} dBFS, low share {:.2}", s.wind_share, s.median_db, low_average(&t));
+        assert!(s.wind_share > 0.6, "{s:?}");
+        assert!(issues_in(&t, 2.0, 10.0).contains(&AudioIssue::Wind));
+        assert!(bad_sound_in(&t, 2.0, 10.0));
+
+        // The same gusts 30 dB down, a light breeze: noted, not set aside.
+        let t = analyze_samples(&interleave(&scaled(&l, 0.03), &scaled(&r, 0.03)), 2, SR);
+        let s = summarize(&t);
+        println!("audio light breeze: share {:.2}, median {:.1} dBFS", s.wind_share, s.median_db);
+        assert!(issues_in(&t, 2.0, 10.0).contains(&AudioIssue::Wind), "{s:?}");
+        assert!(!bad_sound_in(&t, 2.0, 10.0));
+
+        // A breeze under broadband sound (surf, leaves) that keeps a good
+        // part of the energy above 150 Hz: borderline, so not called wind.
+        let mut rng = Rng(9);
+        let mix = |w: &[f32], rng: &mut Rng| w.iter().map(|x| x * 0.05 + rng.noise() * 0.005).collect::<Vec<f32>>();
+        let (ml, mr) = (mix(&l, &mut rng), mix(&r, &mut rng));
+        let t = analyze_samples(&interleave(&ml, &mr), 2, SR);
+        let s = summarize(&t);
+        println!("audio breeze under surf: share {:.2}, low share {:.2}", s.wind_share, low_average(&t));
+        assert!(low_average(&t) > 0.55 && low_average(&t) < 0.75, "{}", low_average(&t));
+        assert!(s.wind_share < 0.1, "{s:?}");
+        assert!(issues_in(&t, 0.0, secs as f64).is_empty());
+
+        // Clipping and dropouts are always bad.
+        let clipped: Vec<f32> = sine(440.0, 1.6, 2.0).into_iter().map(|x| x.clamp(-1.0, 1.0)).collect();
+        assert!(bad_sound_in(&analyze_samples(&clipped, 1, SR), 0.0, 2.0));
+        let mut v = sine(440.0, 0.3, 6.0);
+        v[3 * SR as usize..(3.3 * SR as f32) as usize].iter_mut().for_each(|x| *x = 0.0);
+        let t = analyze_samples(&v, 1, SR);
+        assert!(bad_sound_in(&t, 2.0, 4.0));
+        assert!(!bad_sound_in(&t, 4.0, 6.0));
     }
 
     #[test]
