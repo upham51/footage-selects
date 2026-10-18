@@ -1,5 +1,14 @@
 This app pulls a first pass of selects from raw footage using classical image math. It runs fully offline.
 
+Fixed in 0.2.1, from testing on a real shoot:
+
+1. Sony clips without their XML file no longer read afternoon footage as night. Sony writes its recording time in UTC, and the app now reads it that way. For other cameras that do not say their time zone, the app checks which guess puts bright pictures in daylight.
+2. Scenes are named, and times shown, in the local time where you shot.
+3. Fit settings to my edits works from hand calls alone, and a call on a weak clip says what it did.
+4. The light and sound filters say how many selects kept by hand they leave alone, and selects that cut mid-sentence say so with Start and end in a pause turned off.
+5. Reels: the tempo no longer drifts after a fill or a breakdown, the first shot is never a sliver, and vertical and square reels fill the frame in Premiere Pro and DaVinci Resolve.
+6. Typing a name that ends in .xml no longer gives the stills folder that ending. Plainer wording throughout.
+
 New in 0.2:
 
 1. Log footage is judged in stops through the camera's own curve (S-Log3, V-Log, Canon Log 3, LogC3, F-Log, F-Log2, D-Log, D-Log M, Apple Log, N-Log, HLG). Clipped highlights and underexposure are caught; the flat log look is no longer marked down.
