@@ -148,12 +148,22 @@ jobs:
           args=(--target ${{ matrix.target }} --bundles ${{ matrix.bundles }})
           if [ -n "$TAURI_SIGNING_PRIVATE_KEY" ] && [ -n "$UPDATER_PUBLIC_KEY" ]; then
             echo "Update signing is set up: building update files too."
-            args+=(--config '{"bundle":{"createUpdaterArtifacts":true}}')
+            # The bundler checks its update signatures against this key, so it must be in the config too.
+            args+=(--config "{\"bundle\":{\"createUpdaterArtifacts\":true},\"plugins\":{\"updater\":{\"pubkey\":\"$UPDATER_PUBLIC_KEY\"}}}")
           else
             echo "Update signing is not set up: this build cannot update itself."
             unset UPDATER_PUBLIC_KEY
           fi
-          npx tauri build "${args[@]}"
+          # On failure, surface the end of the build output as an annotation so it can be read without the log.
+          set +e
+          npx tauri build "${args[@]}" 2>&1 | tee build.log
+          rc=${PIPESTATUS[0]}
+          set -e
+          if [ "$rc" -ne 0 ]; then
+            tail -n 25 build.log | tr -d '\r' | sed 's/%/%25/g' | awk '{printf "%s%%0A", $0}' | sed 's/^/::error title=tauri build failed::/'
+            echo
+            exit "$rc"
+          fi
 
       - name: Collect installer and update files
         id: collect
