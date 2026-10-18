@@ -37,6 +37,7 @@ fn info(name: &str, rate: Rate, duration: f64, tc: Option<&str>, audio: bool) ->
         color_transfer: String::new(),
         detected_profile: None,
         camera: None,
+        tags: Default::default(),
     }
 }
 
@@ -56,6 +57,7 @@ fn seg(start: f64, end: f64, f: f32, e: f32, s: f32) -> Segment {
         camera: Default::default(),
         aside: None,
         similar_to: None,
+        ..Default::default()
     }
 }
 
@@ -304,11 +306,11 @@ fn allowed_children(tag: &str) -> &'static [&'static str] {
         "resources" => &["format", "asset"],
         "asset" => &["media-rep"],
         "library" => &["event"],
-        "event" => &["project"],
+        "event" => &["asset-clip", "project"],
         "project" => &["sequence"],
         "sequence" => &["spine"],
         "spine" => &["asset-clip", "gap"],
-        "asset-clip" | "gap" => &["asset-clip", "marker"],
+        "asset-clip" | "gap" => &["adjust-conform", "asset-clip", "marker", "keyword", "rating"],
         _ => &[],
     }
 }
@@ -324,6 +326,7 @@ fn required_attributes(tag: &str) -> &'static [&'static str] {
         "asset-clip" => &["ref", "offset", "name", "start", "duration"],
         "gap" => &["offset", "start", "duration"],
         "marker" => &["start", "duration", "value"],
+        "keyword" | "rating" => &["start", "duration", "value"],
         _ => &[],
     }
 }
@@ -574,15 +577,36 @@ fn csv_source_timecode_at_timeline_rate_matches_the_edl() {
         .trim_start_matches('\u{feff}')
         .lines()
         .skip(1)
-        .map(|l| l.rsplitn(21, ',').collect::<Vec<_>>().into_iter().rev().map(String::from).collect())
+        .map(csv_fields)
         .collect();
     assert_eq!(rows.len(), events.len());
     for (row, e) in rows.iter().zip(&events) {
-        // Columns counted from the end, so a comma in the file name does not shift them.
-        assert_eq!(&row[row.len() - 17..row.len() - 15], &e[4..6], "{row:?}");
+        assert_eq!(row.len(), csv::HEADER.len(), "{row:?}");
+        assert_eq!(&row[3..5], &e[4..6], "{row:?}");
     }
     // The clip-rate columns keep the clip's own frame count: 10:00:01:00 at 25 fps.
     assert!(rows[2].contains(&"10:00:01:00".to_string()), "{:?}", rows[2]);
+}
+
+/// Split one CSV line, honouring quoted fields.
+fn csv_fields(line: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut cur = String::new();
+    let mut quoted = false;
+    let mut chars = line.chars().peekable();
+    while let Some(c) = chars.next() {
+        match c {
+            '"' if quoted && chars.peek() == Some(&'"') => {
+                cur.push('"');
+                chars.next();
+            }
+            '"' => quoted = !quoted,
+            ',' if !quoted => out.push(std::mem::take(&mut cur)),
+            c => cur.push(c),
+        }
+    }
+    out.push(cur);
+    out
 }
 
 /* ---------------- files and paths ---------------- */

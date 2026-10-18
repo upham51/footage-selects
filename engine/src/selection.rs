@@ -49,7 +49,80 @@ pub struct SelectionSettings {
     pub stability_weight: f32,
     /// Set aside selects that look like a better select from another clip.
     pub set_aside_repeats: bool,
+    /// Start and end selects in a pause when someone is talking.
+    pub snap_to_pauses: bool,
+    /// Set aside selects whose sound has wind noise, clipping or a dropout.
+    pub set_aside_sound_problems: bool,
+    /// Which light a select must be in (from the sun's height when and where it was recorded).
+    pub light: LightFilter,
 }
+
+/// Which light a select must be in.
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum LightFilter {
+    #[default]
+    Any,
+    GoldenHour,
+    BlueHour,
+    /// Daylight or harsh midday sun.
+    Daylight,
+    Night,
+}
+
+impl LightFilter {
+    pub fn allows(self, light: Option<crate::solar::Light>) -> bool {
+        use crate::solar::Light;
+        match (self, light) {
+            (LightFilter::Any, _) => true,
+            (_, None) => false,
+            (LightFilter::GoldenHour, Some(l)) => l == Light::GoldenHour,
+            (LightFilter::BlueHour, Some(l)) => l == Light::BlueHour,
+            (LightFilter::Daylight, Some(l)) => matches!(l, Light::Daylight | Light::HarshMidday),
+            (LightFilter::Night, Some(l)) => l == Light::Night,
+        }
+    }
+}
+
+/// A call made by hand on part of a clip. It survives slider changes: a kept
+/// stretch stays exactly as marked, a dropped one stays out.
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq)]
+pub struct Mark {
+    pub start: f64,
+    pub end: f64,
+    pub call: Call,
+    /// 0 to 5 stars, for kept stretches.
+    #[serde(default)]
+    pub stars: u8,
+}
+
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum Call {
+    Keep,
+    Drop,
+}
+
+/// What selection can use besides the scores: the clip's measurements for
+/// the picture checks, where someone talks, and calls made by hand.
+#[derive(Clone, Copy, Default)]
+pub struct ClipExtras<'a> {
+    pub frames: Option<&'a crate::analyze::FrameTable>,
+    pub sound: Option<&'a crate::analyze::SoundMap>,
+    pub audio: Option<&'a crate::audio::AudioTable>,
+    pub marks: &'a [Mark],
+}
+
+/// Horizon readings under this confidence are ignored.
+pub const ROLL_MIN_CONFIDENCE: f32 = 0.35;
+/// A horizon this many degrees or more off level is called crooked.
+pub const CROOKED_DEGREES: f32 = 1.0;
+/// Flicker bands swinging this share of brightness or more are called flicker.
+pub const FLICKER_SHARE: f32 = 0.012;
+/// Rolling-shutter wobble of this many half-size pixels or more is called jello.
+pub const WOBBLE_PIXELS: f32 = 0.35;
+/// How far a select's start or end may move to land in a pause, in seconds.
+pub const PAUSE_REACH: f64 = 2.0;
 
 /// Which camera movement a select must show.
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, Default)]
@@ -113,6 +186,12 @@ pub enum AsideReason {
     Camera,
     /// It looks like a better select from another clip.
     Repeat,
+    /// Its light does not match the light filter, or the light is not known.
+    Light,
+    /// Its sound has wind noise, clipping or a dropout.
+    Sound,
+    /// Dropped by hand.
+    Dropped,
 }
 
 /// A select in another clip that a segment looks like.
@@ -139,6 +218,9 @@ impl Default for SelectionSettings {
             exposure_weight: 1.0,
             stability_weight: 1.0,
             set_aside_repeats: false,
+            snap_to_pauses: true,
+            set_aside_sound_problems: false,
+            light: LightFilter::Any,
         }
     }
 }
@@ -155,9 +237,10 @@ impl SelectionSettings {
     }
 }
 
-#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum SegmentStatus {
+    #[default]
     Kept,
     /// Good enough, but shorter than the minimum length.
     TooShort,
@@ -169,7 +252,7 @@ pub enum SegmentStatus {
     SetAside,
 }
 
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+#[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
 pub struct Segment {
     /// Seconds from the clip start.
     pub start: f64,
@@ -201,9 +284,76 @@ pub struct Segment {
     /// A better select in another clip that this one looks like.
     #[serde(default)]
     pub similar_to: Option<SimilarTo>,
+    /// Kept by hand: exactly this stretch, whatever the scores and filters say.
+    #[serde(default)]
+    pub manual: bool,
+    /// Stars given by hand, 0 to 5.
+    #[serde(default)]
+    pub stars: u8,
+    /// How far the horizon is off level in degrees (positive: rotated
+    /// clockwise), when the picture has clear lines to judge it by.
+    #[serde(default)]
+    pub roll: Option<f32>,
+    /// Light flicker banding, as a share of brightness, when it could be measured.
+    #[serde(default)]
+    pub flicker: Option<f32>,
+    /// Rolling-shutter wobble in half-size pixels, when it could be measured.
+    #[serde(default)]
+    pub wobble: Option<f32>,
+    /// Average chroma of near-neutral parts of the picture (Cb, Cr), for white balance.
+    #[serde(default)]
+    pub wb: Option<(f32, f32)>,
+    /// Share of the segment with someone talking.
+    #[serde(default)]
+    pub talk: f32,
+    /// Ends (0, 1 or 2) that still cut while someone talks.
+    #[serde(default)]
+    pub speech_cuts: u8,
+    /// Ends moved into a pause in the talking.
+    #[serde(default)]
+    pub snapped: u8,
+    /// Sound problems inside the segment.
+    #[serde(default)]
+    pub sound: Vec<crate::audio::AudioIssue>,
 }
 
 impl Segment {
+    pub fn crooked(&self) -> bool {
+        self.roll.map(|r| r.abs() >= CROOKED_DEGREES).unwrap_or(false)
+    }
+    pub fn flickers(&self) -> bool {
+        self.flicker.map(|f| f >= FLICKER_SHARE).unwrap_or(false)
+    }
+    pub fn jello(&self) -> bool {
+        self.wobble.map(|w| w >= WOBBLE_PIXELS).unwrap_or(false)
+    }
+    /// Plain sentences about problems a person should know before using it.
+    pub fn problem_notes(&self) -> Vec<String> {
+        let mut v = Vec::new();
+        if let Some(r) = self.roll.filter(|_| self.crooked()) {
+            v.push(format!(
+                "Horizon tilts down to the {} by {:.1} degrees; rotate {:.1} degrees {} to level it",
+                if r > 0.0 { "right" } else { "left" },
+                r.abs(),
+                r.abs(),
+                if r > 0.0 { "counter-clockwise" } else { "clockwise" }
+            ));
+        }
+        if self.flickers() {
+            v.push("Light flicker: bands roll through the picture".into());
+        }
+        if self.jello() {
+            v.push("Jello: the picture wobbles, typical of propeller vibration or a loose mount".into());
+        }
+        for i in &self.sound {
+            v.push(i.words().to_string());
+        }
+        if self.speech_cuts > 0 {
+            v.push(if self.speech_cuts == 2 { "Starts and ends mid-sentence".into() } else { "Cuts mid-sentence".into() });
+        }
+        v
+    }
+
     pub fn duration(&self) -> f64 {
         self.end - self.start
     }
@@ -373,6 +523,16 @@ fn make_segment(sm: &ScoreSeries, bounds: &[f64], start: f64, end: f64, status: 
         camera: if camera_move && camera == CameraMove::Still { CameraMove::Other } else { camera },
         aside: None,
         similar_to: None,
+        manual: false,
+        stars: 0,
+        roll: None,
+        flicker: None,
+        wobble: None,
+        wb: None,
+        talk: 0.0,
+        speech_cuts: 0,
+        snapped: 0,
+        sound: Vec::new(),
     }
 }
 
@@ -384,7 +544,7 @@ fn make_segment(sm: &ScoreSeries, bounds: &[f64], start: f64, end: f64, status: 
 /// (so parts come out even); a part longer than `max` is only allowed when
 /// `keep_moves` is on and the part is mostly one camera move, and costs a
 /// fixed amount so it only wins over a cut in the middle of the move.
-fn split_at_rest(sm: &ScoreSeries, bounds: &[f64], run: &Run, min: f64, max: f64, keep_moves: bool) -> Option<Vec<(f64, f64)>> {
+fn split_at_rest(sm: &ScoreSeries, bounds: &[f64], run: &Run, min: f64, max: f64, keep_moves: bool, sound: Option<&crate::analyze::SoundMap>) -> Option<Vec<(f64, f64)>> {
     // Cut positions: run start, every sample boundary inside, run end.
     let mut pos: Vec<f64> = vec![run.start];
     let mut cut_cost: Vec<f32> = vec![0.0];
@@ -392,7 +552,9 @@ fn split_at_rest(sm: &ScoreSeries, bounds: &[f64], run: &Run, min: f64, max: f64
         pos.push(bounds[k]);
         let m = 0.5 * (movingness(sm, k - 1) + movingness(sm, k));
         let speed = 0.5 * (sm.motion.get(k - 1).copied().unwrap_or(0.0) + sm.motion.get(k).copied().unwrap_or(0.0));
-        cut_cost.push(4.0 * m + 0.3 * ramp(speed, 0.0, STILL_SPEED));
+        // Cutting while someone talks costs about as much as cutting a camera move.
+        let talk = sound.map(|sd| if sd.talking_at(bounds[k]) { 3.0 } else { 0.0 }).unwrap_or(0.0);
+        cut_cost.push(4.0 * m + 0.3 * ramp(speed, 0.0, STILL_SPEED) + talk);
     }
     pos.push(run.end);
     cut_cost.push(0.0);
@@ -513,31 +675,114 @@ fn camera_pieces(sm: &ScoreSeries, bounds: &[f64], run: &Run) -> Vec<Run> {
 }
 
 /// Turn one good run into kept and too-short segments, splitting it when it
-/// is longer than the maximum.
-fn place_run(sm: &ScoreSeries, bounds: &[f64], run: &Run, s: &SelectionSettings, segments: &mut Vec<Segment>) {
+/// is longer than the maximum. With `sound`, ends that would cut through
+/// talking move into the nearest pause inside the run when one is close.
+fn place_run(sm: &ScoreSeries, bounds: &[f64], run: &Run, s: &SelectionSettings, sound: Option<&crate::analyze::SoundMap>, segments: &mut Vec<Segment>) {
     let min = s.min_length.max(0.0) as f64;
     let max = (s.max_length as f64).max(min);
     if run.end - run.start + 1e-9 < min {
         segments.push(make_segment(sm, bounds, run.start, run.end, SegmentStatus::TooShort, s));
         return;
     }
+    let sound = sound.filter(|sd| s.snap_to_pauses && !sd.talking.is_empty());
     let needs_split = run.end - run.start > max + 1e-9;
-    let parts = if needs_split && sm.motion.len() == sm.len() {
-        split_at_rest(sm, bounds, run, min, max, s.keep_moves_whole).unwrap_or_else(|| split(run.start, run.end, min, max))
+    let mut parts = if needs_split && sm.motion.len() == sm.len() {
+        split_at_rest(sm, bounds, run, min, max, s.keep_moves_whole, sound).unwrap_or_else(|| split(run.start, run.end, min, max))
     } else {
         split(run.start, run.end, min, max)
     };
+    let mut snapped = vec![(0u8, 0u8); parts.len()];
+    if let Some(sd) = sound {
+        snap_parts(&mut parts, &mut snapped, run, min, max, sd);
+    }
     // Trimmed ends from splitting are reported as too short.
     let first_start = parts.first().map(|p| p.0).unwrap_or(run.start);
     let last_end = parts.last().map(|p| p.1).unwrap_or(run.end);
     if first_start - run.start > 1e-6 {
         segments.push(make_segment(sm, bounds, run.start, first_start, SegmentStatus::TooShort, s));
     }
-    for (a, b) in parts {
-        segments.push(make_segment(sm, bounds, a, b, SegmentStatus::Kept, s));
+    for (k, (a, b)) in parts.iter().copied().enumerate() {
+        let mut g = make_segment(sm, bounds, a, b, SegmentStatus::Kept, s);
+        if let Some(sd) = sound {
+            g.speech_cuts = sd.talking_at(a + 0.02) as u8 + sd.talking_at(b - 0.02) as u8;
+            g.snapped = snapped[k].0 + snapped[k].1;
+        }
+        segments.push(g);
     }
     if run.end - last_end > 1e-6 {
         segments.push(make_segment(sm, bounds, last_end, run.end, SegmentStatus::TooShort, s));
+    }
+}
+
+/// The best point in `lo..hi` to cut at, inside a pause: `Edge::Start` cuts
+/// just before talking resumes, `Edge::End` just after it stops, `Edge::Both`
+/// in the middle of the pause. None when no pause reaches into the range.
+fn pause_point(sd: &crate::analyze::SoundMap, near: f64, lo: f64, hi: f64, edge: Edge) -> Option<f64> {
+    let mut best: Option<f64> = None;
+    for &(a, b) in &sd.pauses {
+        if b < lo || a > hi {
+            continue;
+        }
+        let lead = ((b - a) / 2.0).min(0.25);
+        let want = match edge {
+            Edge::Start => b - lead,
+            Edge::End => a + lead,
+            Edge::Both => 0.5 * (a + b),
+        };
+        let p = want.clamp(lo.max(a), hi.min(b));
+        if best.map_or(true, |q| (p - near).abs() < (q - near).abs()) {
+            best = Some(p);
+        }
+    }
+    best
+}
+
+#[derive(Clone, Copy)]
+enum Edge {
+    Start,
+    End,
+    Both,
+}
+
+/// Move the ends of `parts` that cut through talking into pauses, keeping
+/// every part within the run and within the length limits.
+fn snap_parts(parts: &mut [(f64, f64)], snapped: &mut [(u8, u8)], run: &Run, min: f64, max: f64, sd: &crate::analyze::SoundMap) {
+    let n = parts.len();
+    let long = 2.0 * max;
+    for k in 0..n {
+        // Start of this part.
+        let (a, b) = parts[k];
+        if sd.talking_at(a + 0.02) {
+            let (lo, edge) = if k == 0 { (run.start, Edge::Start) } else { ((a - PAUSE_REACH).max(parts[k - 1].0 + min), Edge::Both) };
+            let hi = (a + PAUSE_REACH).min(b - min);
+            if lo <= hi {
+                if let Some(p) = pause_point(sd, a, lo, hi, edge) {
+                    let ok_prev = k == 0 || (p - parts[k - 1].0 <= long && p - parts[k - 1].0 + 1e-9 >= min);
+                    if ok_prev && b - p <= long {
+                        parts[k].0 = p;
+                        snapped[k].0 = 1;
+                        if k > 0 {
+                            parts[k - 1].1 = p;
+                            snapped[k - 1].1 = 1;
+                        }
+                    }
+                }
+            }
+        }
+        // End of the last part (inner ends were handled as the next part's start).
+        if k == n - 1 {
+            let (a, b) = parts[k];
+            if sd.talking_at(b - 0.02) {
+                let lo = (b - PAUSE_REACH).max(a + min);
+                let hi = run.end.min(b + PAUSE_REACH);
+                if lo <= hi {
+                    if let Some(p) = pause_point(sd, b, lo, hi, Edge::End) {
+                        parts[k].1 = p;
+                        snapped[k].1 = 1;
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -552,6 +797,13 @@ pub fn select_clip(scores: &ScoreSeries, end_time: f64, s: &SelectionSettings) -
 /// Everything `select_clip` does except the per-clip limit, so the project
 /// can set aside repeated takes across clips first.
 pub fn select_candidates(scores: &ScoreSeries, end_time: f64, s: &SelectionSettings) -> ClipSelection {
+    select_candidates_with(scores, end_time, s, &ClipExtras::default())
+}
+
+/// `select_candidates` with what else is known about the clip: picture
+/// checks and sound for each segment, cuts in speech pauses, and calls made
+/// by hand.
+pub fn select_candidates_with(scores: &ScoreSeries, end_time: f64, s: &SelectionSettings, x: &ClipExtras) -> ClipSelection {
     let n = scores.len();
     if n == 0 {
         return ClipSelection::default();
@@ -625,10 +877,10 @@ pub fn select_candidates(scores: &ScoreSeries, end_time: f64, s: &SelectionSetti
         }
         if s.camera != CameraFilter::Any && sm.motion.len() == n {
             for piece in camera_pieces(&sm, &bounds, run) {
-                place_run(&sm, &bounds, &piece, s, &mut segments);
+                place_run(&sm, &bounds, &piece, s, x.sound, &mut segments);
             }
         } else {
-            place_run(&sm, &bounds, run, s, &mut segments);
+            place_run(&sm, &bounds, run, s, x.sound, &mut segments);
         }
     }
 
@@ -639,13 +891,130 @@ pub fn select_candidates(scores: &ScoreSeries, end_time: f64, s: &SelectionSetti
         }
     }
 
+    if !x.marks.is_empty() {
+        segments = apply_marks(&sm, &bounds, end_time, s, segments, x.marks);
+    }
+    for g in segments.iter_mut() {
+        add_checks(&sm, &bounds, g, x);
+    }
+
     ClipSelection {
         smoothed: sm,
         segments,
     }
 }
 
+/// Middle value of a list, or None for an empty one.
+fn median(mut v: Vec<f32>) -> Option<f32> {
+    if v.is_empty() {
+        return None;
+    }
+    v.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    Some(v[v.len() / 2])
+}
+
+/// Fill in a segment's horizon, flicker, wobble, white balance and sound.
+fn add_checks(sm: &ScoreSeries, bounds: &[f64], g: &mut Segment, x: &ClipExtras) {
+    if let Some(f) = x.frames.filter(|f| f.has_picture_checks() && f.len() == sm.len()) {
+        let idx = segment_indices(sm, bounds, g.start, g.end);
+        let rolls: Vec<f32> = idx.iter().filter(|&&i| f.roll_conf[i] >= ROLL_MIN_CONFIDENCE).map(|&i| f.roll[i]).collect();
+        if rolls.len() >= 2 && rolls.len() * 5 >= idx.len() * 2 {
+            g.roll = median(rolls).map(|r| (r * 10.0).round() / 10.0);
+        }
+        let flick: Vec<f32> = idx.iter().map(|&i| f.flicker[i]).filter(|&v| v >= 0.0).collect();
+        if flick.len() >= 3 {
+            g.flicker = median(flick);
+        }
+        let wob: Vec<f32> = idx.iter().map(|&i| f.wobble[i]).filter(|&v| v >= 0.0).collect();
+        if wob.len() >= 3 {
+            g.wobble = median(wob);
+        }
+        let ok: Vec<usize> = idx.iter().copied().filter(|&i| f.wb_ok[i] != 0).collect();
+        if ok.len() * 2 >= idx.len().max(1) && !ok.is_empty() {
+            let cb = median(ok.iter().map(|&i| f.cb[i]).collect()).unwrap_or(0.0);
+            let cr = median(ok.iter().map(|&i| f.cr[i]).collect()).unwrap_or(0.0);
+            g.wb = Some((cb, cr));
+        }
+    }
+    if let Some(t) = x.audio {
+        g.sound = crate::audio::issues_in(t, g.start, g.end);
+        if x.sound.map(|sd| sd.summary.has_speech).unwrap_or(false) {
+            g.talk = crate::audio::talk_share_in(t, g.start, g.end);
+        }
+    }
+}
+
+/// Apply calls made by hand. Dropped stretches set aside the kept segments
+/// they mostly cover; kept stretches replace whatever was there with one
+/// kept segment exactly as marked.
+fn apply_marks(sm: &ScoreSeries, bounds: &[f64], end_time: f64, s: &SelectionSettings, mut segments: Vec<Segment>, marks: &[Mark]) -> Vec<Segment> {
+    for m in marks.iter().filter(|m| m.call == Call::Drop) {
+        for g in segments.iter_mut() {
+            let overlap = g.end.min(m.end) - g.start.max(m.start);
+            if overlap > 0.0 && overlap * 2.0 >= g.duration().min(m.end - m.start) && matches!(g.status, SegmentStatus::Kept | SegmentStatus::SetAside) {
+                g.status = SegmentStatus::SetAside;
+                g.aside = Some(AsideReason::Dropped);
+            }
+        }
+    }
+    let mut keeps: Vec<(f64, f64, u8)> = marks
+        .iter()
+        .filter(|m| m.call == Call::Keep)
+        .map(|m| (m.start.max(0.0), m.end.min(end_time.max(m.start)), m.stars.min(5)))
+        .filter(|k| k.1 - k.0 > 0.05)
+        .collect();
+    if keeps.is_empty() {
+        return segments;
+    }
+    keeps.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+    let min = s.min_length.max(0.0) as f64;
+    let mut out: Vec<Segment> = Vec::with_capacity(segments.len() + keeps.len() * 2);
+    for g in segments {
+        // What is left of this segment outside every kept mark.
+        let mut pieces = vec![(g.start, g.end)];
+        for &(ka, kb, _) in &keeps {
+            let mut next = Vec::new();
+            for (a, b) in pieces {
+                if kb <= a || ka >= b {
+                    next.push((a, b));
+                    continue;
+                }
+                if ka > a {
+                    next.push((a, ka));
+                }
+                if kb < b {
+                    next.push((kb, b));
+                }
+            }
+            pieces = next;
+        }
+        if pieces.len() == 1 && (pieces[0].0 - g.start).abs() < 1e-9 && (pieces[0].1 - g.end).abs() < 1e-9 {
+            out.push(g);
+            continue;
+        }
+        for (a, b) in pieces.into_iter().filter(|p| p.1 - p.0 > 0.05) {
+            let mut status = g.status;
+            if status == SegmentStatus::Kept && b - a + 1e-9 < min {
+                status = SegmentStatus::TooShort;
+            }
+            let mut piece = make_segment(sm, bounds, a, b, status, s);
+            piece.failed = g.failed.clone();
+            piece.aside = if status == SegmentStatus::SetAside { g.aside } else { None };
+            out.push(piece);
+        }
+    }
+    for (a, b, stars) in keeps {
+        let mut k = make_segment(sm, bounds, a, b, SegmentStatus::Kept, s);
+        k.manual = true;
+        k.stars = stars;
+        out.push(k);
+    }
+    out.sort_by(|a, b| a.start.partial_cmp(&b.start).unwrap_or(std::cmp::Ordering::Equal));
+    out
+}
+
 /// Keep only the best `cap` kept segments; the rest go over the limit. 0 means no limit.
+/// Segments kept by hand always stay and do not count toward the limit.
 pub fn apply_cap(segments: &mut [Segment], cap: u32) {
     if cap == 0 {
         return;
@@ -653,7 +1022,7 @@ pub fn apply_cap(segments: &mut [Segment], cap: u32) {
     let mut ranked: Vec<usize> = segments
         .iter()
         .enumerate()
-        .filter(|(_, g)| g.status == SegmentStatus::Kept)
+        .filter(|(_, g)| g.status == SegmentStatus::Kept && !g.manual)
         .map(|(i, _)| i)
         .collect();
     // Highest score first; earlier segment wins a tie so results are stable.
@@ -682,7 +1051,16 @@ pub enum NoSelectReason {
     TooShort { longest: f64, needs: f64 },
     /// Good stretches exist, but all were set aside: `camera` by the camera
     /// filter, `repeats` as repeated takes of selects in other clips.
-    SetAside { camera: usize, repeats: usize },
+    SetAside {
+        camera: usize,
+        repeats: usize,
+        #[serde(default)]
+        light: usize,
+        #[serde(default)]
+        sound: usize,
+        #[serde(default)]
+        dropped: usize,
+    },
 }
 
 /// The main reason a clip got no selects, or None when it has some (or
@@ -695,8 +1073,9 @@ pub fn no_select_reason(sel: &ClipSelection, s: &SelectionSettings) -> Option<No
     }
     let aside = |r: AsideReason| sel.segments.iter().filter(|g| g.status == SegmentStatus::SetAside && g.aside == Some(r)).count();
     let (camera, repeats) = (aside(AsideReason::Camera), aside(AsideReason::Repeat));
-    if camera + repeats > 0 {
-        return Some(NoSelectReason::SetAside { camera, repeats });
+    let (light, sound, dropped) = (aside(AsideReason::Light), aside(AsideReason::Sound), aside(AsideReason::Dropped));
+    if camera + repeats + light + sound + dropped > 0 {
+        return Some(NoSelectReason::SetAside { camera, repeats, light, sound, dropped });
     }
     let scores = [
         ("focus", &sm.focus, s.focus_min),

@@ -52,6 +52,67 @@ pub struct ClipInfo {
     /// What the camera wrote beside the clip: profile, ISO, shutter, place.
     #[serde(default)]
     pub camera: Option<CameraNotes>,
+    /// When and where the file says it was recorded, as written in its tags.
+    #[serde(default)]
+    pub tags: RecordTags,
+}
+
+/// Recording time and place as the file's own tags give them. Kept as text
+/// so how they are read can improve without reading the files again.
+#[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
+#[serde(default)]
+pub struct RecordTags {
+    /// The container's `creation_time`. Phones write true UTC here; many
+    /// cameras write their own clock time with a UTC label.
+    pub creation_time: Option<String>,
+    /// Apple's creation date, which carries the time zone, such as 2024-05-02T18:01:23+0200.
+    pub apple_creation: Option<String>,
+    /// ISO 6709 position, such as +48.8584+002.2945+035.000/.
+    pub location: Option<String>,
+    /// Who made the file, from its tags, such as Apple or samsung.
+    pub make: Option<String>,
+    /// The file came from a phone, whose `creation_time` is true UTC.
+    pub phone: bool,
+}
+
+/// Recording time and place from the container's tags.
+pub fn record_tags(json: &Value) -> RecordTags {
+    let mut t = RecordTags::default();
+    let mut pairs: Vec<(String, String)> = Vec::new();
+    if let Some(Value::Object(m)) = json.get("format").and_then(|f| f.get("tags")) {
+        for (k, v) in m {
+            if let Some(v) = v.as_str() {
+                pairs.push((k.to_ascii_lowercase(), v.trim().to_string()));
+            }
+        }
+    }
+    if let Some(streams) = json.get("streams").and_then(|s| s.as_array()) {
+        for st in streams {
+            if let Some(Value::Object(m)) = st.get("tags") {
+                for (k, v) in m {
+                    if let Some(v) = v.as_str() {
+                        pairs.push((k.to_ascii_lowercase(), v.trim().to_string()));
+                    }
+                }
+            }
+        }
+    }
+    for (k, v) in &pairs {
+        if v.is_empty() {
+            continue;
+        }
+        match k.as_str() {
+            "creation_time" if t.creation_time.is_none() => t.creation_time = Some(v.clone()),
+            "com.apple.quicktime.creationdate" => t.apple_creation = Some(v.clone()),
+            "com.apple.quicktime.location.iso6709" | "location" | "location-eng" if t.location.is_none() => t.location = Some(v.clone()),
+            "com.apple.quicktime.make" | "make" | "com.android.manufacturer" if t.make.is_none() => t.make = Some(v.clone()),
+            _ => {}
+        }
+        if k.starts_with("com.apple.quicktime.") || k.starts_with("com.android.") {
+            t.phone = true;
+        }
+    }
+    t
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -417,6 +478,7 @@ pub fn parse_probe(json: &Value, path: &Path, size: u64, modified: u64) -> Resul
             .to_string(),
         detected_profile: profile_from_tags(json, video),
         camera: None,
+        tags: record_tags(json),
     })
 }
 

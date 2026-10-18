@@ -62,11 +62,38 @@ pub struct SelectMeta {
     pub camera_move: bool,
     /// Which way the camera moves, when it does.
     pub camera: crate::selection::CameraMove,
+    /// Stars given by hand, 0 to 5.
+    pub stars: u8,
+    /// Kept by hand rather than by the settings.
+    pub manual: bool,
+    /// The scene group, such as "Day 1, morning".
+    pub group: Option<String>,
+    pub light: Option<crate::solar::Light>,
+    /// Problems worth knowing, as plain sentences.
+    pub problems: Vec<String>,
+    /// Words to search or collect by in the editor.
+    pub keywords: Vec<String>,
+    /// Timeline frames from where the placed clip starts to where the select
+    /// itself starts (the extra time added before it).
+    pub lead: i64,
+    /// Timeline frames of extra time after the select.
+    pub tail: i64,
 }
 
 impl SelectMeta {
     pub fn marker_name(&self) -> String {
-        format!("Select {}: {}", self.number, self.tier.word())
+        let mut s = format!("Select {}: {}", self.number, self.tier.word());
+        if self.stars > 0 {
+            s.push_str(&format!(", {} {}", self.stars, if self.stars == 1 { "star" } else { "stars" }));
+        }
+        if self.manual {
+            s.push_str(", kept by hand");
+        }
+        s
+    }
+    /// Keywords joined for fields that hold one line of text.
+    pub fn keyword_line(&self) -> String {
+        self.keywords.join(", ")
     }
     /// The marker note: the three scores on a 0 to 100 scale.
     pub fn marker_note(&self) -> String {
@@ -92,8 +119,67 @@ impl SelectMeta {
                 s.push('.');
             }
         }
+        if let Some(l) = self.light {
+            s.push(' ');
+            s.push_str(l.words());
+            s.push('.');
+        }
+        for p in &self.problems {
+            s.push(' ');
+            s.push_str(p);
+            s.push('.');
+        }
         s
     }
+}
+
+/// Keywords for a select: strength, stars, camera movement, light, scene,
+/// talking and problems, in that order.
+pub fn select_keywords(seg: &crate::selection::Segment, tier: Tier, light: Option<crate::solar::Light>, group: Option<&str>) -> Vec<String> {
+    use crate::selection::CameraMove;
+    let mut k: Vec<String> = Vec::new();
+    let mut w = tier.word().to_string();
+    w[..1].make_ascii_uppercase();
+    k.push(w);
+    if seg.stars > 0 {
+        k.push(format!("{} {}", seg.stars, if seg.stars == 1 { "star" } else { "stars" }));
+    }
+    if seg.manual {
+        k.push("Kept by hand".into());
+    }
+    k.push(match seg.camera {
+        CameraMove::Still if seg.camera_move => "Camera move".into(),
+        CameraMove::Other => "Camera move".into(),
+        m => m.words().to_string(),
+    });
+    if matches!(seg.camera, CameraMove::PanLeft | CameraMove::PanRight) {
+        k.push("Pan".into());
+    }
+    if matches!(seg.camera, CameraMove::TiltUp | CameraMove::TiltDown) {
+        k.push("Tilt".into());
+    }
+    if let Some(l) = light {
+        k.push(l.words().to_string());
+    }
+    if let Some(g) = group {
+        k.push(g.to_string());
+    }
+    if seg.talk >= 0.3 {
+        k.push("Talking".into());
+    }
+    if seg.crooked() {
+        k.push("Crooked horizon".into());
+    }
+    if seg.flickers() {
+        k.push("Flicker".into());
+    }
+    if seg.jello() {
+        k.push("Jello".into());
+    }
+    for i in &seg.sound {
+        k.push(i.words().to_string());
+    }
+    k
 }
 
 /// "S-Log3, middle tones -0.5 stops" for log footage, nothing for standard.
@@ -173,6 +259,26 @@ pub struct Timeline {
     /// Track 2: the selects.
     pub selects: Vec<Placed>,
     pub duration: i64,
+    /// A music track under the whole timeline (reels).
+    pub music: Option<Music>,
+    /// Whether the selects carry their own sound when they are the only clips.
+    pub select_audio: bool,
+    /// The timeline is a different shape from the footage, so clips are
+    /// scaled to fill it (cut from the centre).
+    pub fill: bool,
+}
+
+/// An audio file laid under the timeline from its start.
+#[derive(Clone, Debug)]
+pub struct Music {
+    pub path: String,
+    pub name: String,
+    pub sample_rate: u32,
+    pub channels: u32,
+    /// Length of the file in timeline frames.
+    pub frames_total: i64,
+    /// Length used on the timeline, in timeline frames.
+    pub frames_used: i64,
 }
 
 /// Frames of media at `rate`, rounded down so the last frame never runs past the end.
@@ -200,10 +306,15 @@ pub fn build_timeline(project: &Project, selections: &[ClipSelection]) -> (Timel
         base: Vec::new(),
         selects: Vec::new(),
         duration: 0,
+        music: None,
+        select_audio: true,
+        fill: false,
     };
+    let scenes = crate::scene::resolve(project);
+    let handles = rate.seconds_to_frames(project.export.handles.clamp(0.0, 10.0) as f64);
     let mut cursor: i64 = 0;
     let (mut missing, mut unanalysed, mut partial) = (0, 0, 0);
-    for (clip, sel) in project.clips.iter().zip(selections.iter()) {
+    for ((clip, sel), scene) in project.clips.iter().zip(selections.iter()).zip(scenes.iter()) {
         let Some(info) = clip.info.clone() else { continue };
         let profile = clip.resolved_profile(project.fallback_profile).profile;
         match &clip.analysis {
@@ -252,9 +363,22 @@ pub fn build_timeline(project: &Project, selections: &[ClipSelection]) -> (Timel
             });
             cursor += frames_timeline;
         }
-        for seg in kept {
-            let src_in = rate.seconds_to_frames(seg.start).clamp(0, frames_timeline - 1);
-            let src_out = rate.seconds_to_frames(seg.end).clamp(src_in + 1, frames_timeline);
+        // Extra time around each select, never reaching into the next select
+        // of the same clip, so selects above their source never overlap.
+        let spans: Vec<(i64, i64)> = kept
+            .iter()
+            .map(|seg| {
+                let a = rate.seconds_to_frames(seg.start).clamp(0, frames_timeline - 1);
+                let b = rate.seconds_to_frames(seg.end).clamp(a + 1, frames_timeline);
+                (a, b)
+            })
+            .collect();
+        for (k, seg) in kept.iter().enumerate() {
+            let (sel_in, sel_out) = spans[k];
+            let lo = if k > 0 && tl.layout == TimelineLayout::FullClipsBelow { (spans[k - 1].1 + sel_in + 1) / 2 } else { 0 };
+            let hi = if k + 1 < spans.len() && tl.layout == TimelineLayout::FullClipsBelow { (sel_out + spans[k + 1].0) / 2 } else { frames_timeline };
+            let src_in = (sel_in - handles).max(lo).max(0).min(sel_in);
+            let src_out = (sel_out + handles).min(hi).min(frames_timeline).max(sel_out);
             let duration = src_out - src_in;
             let record_in = match tl.layout {
                 TimelineLayout::FullClipsBelow => clip_start + src_in,
@@ -271,6 +395,7 @@ pub fn build_timeline(project: &Project, selections: &[ClipSelection]) -> (Timel
                 .rate
                 .seconds_to_frames(rate.frames_to_seconds(src_in))
                 .clamp(0, source.frames_native - 1);
+            let tier = Tier::from_score(seg.score);
             tl.selects.push(Placed {
                 source: si,
                 record_in,
@@ -285,10 +410,18 @@ pub fn build_timeline(project: &Project, selections: &[ClipSelection]) -> (Timel
                     exposure: seg.exposure,
                     stability: seg.stability,
                     score: seg.score,
-                    tier: Tier::from_score(seg.score),
+                    tier,
                     exposure_note: profile_note(profile, seg.key_stops),
                     camera_move: seg.camera_move,
                     camera: seg.camera,
+                    stars: seg.stars,
+                    manual: seg.manual,
+                    group: scene.group.clone(),
+                    light: scene.light,
+                    problems: seg.problem_notes(),
+                    keywords: select_keywords(seg, tier, scene.light, scene.group.as_deref()),
+                    lead: sel_in - src_in,
+                    tail: src_out - sel_out,
                 }),
             });
         }
@@ -390,11 +523,16 @@ pub fn write_all(project: &Project, base: &Path) -> Result<Written, ExportError>
             "There are no selects to export, so nothing was written. Lower a threshold or analyze more footage, then export again.".into(),
         ));
     }
+    write_timeline(&tl, base, warnings)
+}
+
+/// Write the four files for any timeline.
+pub fn write_timeline(tl: &Timeline, base: &Path, warnings: Vec<String>) -> Result<Written, ExportError> {
     let outputs = [
-        ("xml", fcp7::write(&tl)),
-        ("fcpxml", fcpxml::write(&tl)),
-        ("edl", edl::write(&tl)),
-        ("csv", csv::write(&tl)),
+        ("xml", fcp7::write(tl)),
+        ("fcpxml", fcpxml::write(tl)),
+        ("edl", edl::write(tl)),
+        ("csv", csv::write(tl)),
     ];
     let mut files = Vec::new();
     for (ext, text) in outputs {
@@ -417,4 +555,134 @@ pub fn write_all(project: &Project, base: &Path) -> Result<Written, ExportError>
         selects: tl.selects.len(),
         warnings,
     })
+}
+
+/// The timeline size for a reel shape, from the footage's most common size.
+pub fn reel_size(project: &Project, shape: crate::reel::ReelShape) -> (u32, u32) {
+    use crate::reel::ReelShape;
+    let (w, h) = project.most_common_resolution();
+    let short = w.min(h);
+    let even = |v: u32| v / 2 * 2;
+    match shape {
+        ReelShape::Landscape => (w.max(h), short),
+        ReelShape::Vertical => (short, even(short * 16 / 9)),
+        ReelShape::Square => (short, short),
+    }
+}
+
+/// A timeline of a planned reel: the shots back to back with the music under them.
+pub fn build_reel_timeline(project: &Project, plan: &crate::reel::ReelPlan, music: &crate::beats::MusicInfo, shape: crate::reel::ReelShape, name: &str) -> Timeline {
+    let rate = project.timeline_rate();
+    let drop_frame = project.timeline_drop_frame();
+    let start_frame = timecode_to_frames(&project.export.start_timecode, rate, drop_frame)
+        .unwrap_or_else(|| timecode_to_frames("01:00:00:00", rate, drop_frame).unwrap());
+    let (width, height) = reel_size(project, shape);
+    let footage = project.most_common_resolution();
+    let scenes = crate::scene::resolve(project);
+    let mut tl = Timeline {
+        name: name.to_string(),
+        rate,
+        drop_frame,
+        start_frame,
+        width,
+        height,
+        layout: TimelineLayout::SelectsOnly,
+        sources: Vec::new(),
+        base: Vec::new(),
+        selects: Vec::new(),
+        duration: 0,
+        music: None,
+        select_audio: false,
+        fill: (width as u64 * footage.1 as u64) != (height as u64 * footage.0 as u64),
+    };
+    let mut source_of: Vec<(u64, usize)> = Vec::new();
+    for (n, shot) in plan.shots.iter().enumerate() {
+        let Some(clip) = project.clip(shot.clip_id) else { continue };
+        let Some(info) = clip.info.clone() else { continue };
+        let si = match source_of.iter().find(|(id, _)| *id == shot.clip_id) {
+            Some((_, si)) => *si,
+            None => {
+                let tc_drop = info.timecode.as_deref().map(crate::rate::is_drop_frame_string).unwrap_or(false);
+                let tc_frames = info.timecode.as_deref().and_then(|tc| timecode_to_frames(tc, info.rate, tc_drop)).unwrap_or(0);
+                let frames_native = media_frames(info.duration, info.rate);
+                let frames_timeline = media_frames(info.rate.frames_to_seconds(frames_native), rate);
+                tl.sources.push(Source { info, tc_frames, tc_drop, frames_native, frames_timeline });
+                source_of.push((shot.clip_id, tl.sources.len() - 1));
+                tl.sources.len() - 1
+            }
+        };
+        let src = &tl.sources[si];
+        let record_in = rate.seconds_to_frames(shot.at);
+        let record_out = rate.seconds_to_frames(shot.at + shot.length);
+        let duration = (record_out - record_in).max(1);
+        let source_in = rate.seconds_to_frames(shot.source_start).clamp(0, (src.frames_timeline - duration).max(0));
+        let native = src.info.rate.seconds_to_frames(rate.frames_to_seconds(source_in)).clamp(0, src.frames_native - 1);
+        let seg = crate::selection::Segment {
+            start: shot.source_start,
+            end: shot.source_end,
+            score: shot.score,
+            camera: shot.camera,
+            camera_move: shot.camera != crate::selection::CameraMove::Still,
+            stars: shot.stars,
+            manual: shot.manual,
+            ..Default::default()
+        };
+        let scene = scenes.iter().find(|s| s.id == shot.clip_id);
+        let tier = Tier::from_score(shot.score);
+        tl.selects.push(Placed {
+            source: si,
+            record_in,
+            duration,
+            source_in,
+            source_in_native: native,
+            select: Some(SelectMeta {
+                number: n + 1,
+                start_seconds: shot.source_start,
+                end_seconds: shot.source_end,
+                focus: 0.0,
+                exposure: 0.0,
+                stability: 0.0,
+                score: shot.score,
+                tier,
+                exposure_note: None,
+                camera_move: seg.camera_move,
+                camera: shot.camera,
+                stars: shot.stars,
+                manual: shot.manual,
+                group: scene.and_then(|s| s.group.clone()),
+                light: scene.and_then(|s| s.light),
+                problems: Vec::new(),
+                keywords: select_keywords(&seg, tier, scene.and_then(|s| s.light), scene.and_then(|s| s.group.as_deref())),
+                lead: 0,
+                tail: 0,
+            }),
+        });
+        tl.duration = tl.duration.max(record_in + duration);
+    }
+    // Scores for the markers, from the select each shot came from.
+    let (selections, _) = project.select_all();
+    for p in tl.selects.iter_mut() {
+        let clip_index = project.clips.iter().position(|c| Some(c.path.as_str()) == Some(tl.sources[p.source].info.path.as_str()));
+        if let (Some(ci), Some(m)) = (clip_index, p.select.as_mut()) {
+            if let Some(g) = selections[ci].segments.iter().find(|g| g.start <= m.start_seconds + 0.05 && g.end >= m.start_seconds - 0.05 && g.status == crate::selection::SegmentStatus::Kept) {
+                m.focus = g.focus;
+                m.exposure = g.exposure;
+                m.stability = g.stability;
+            } else {
+                m.focus = m.score;
+                m.exposure = m.score;
+                m.stability = m.score;
+            }
+        }
+    }
+    let total = media_frames(music.duration, rate);
+    tl.music = Some(Music {
+        path: music.path.clone(),
+        name: music.name.clone(),
+        sample_rate: music.sample_rate,
+        channels: music.channels,
+        frames_total: total,
+        frames_used: tl.duration.min(total),
+    });
+    tl
 }

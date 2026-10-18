@@ -28,6 +28,15 @@ pub const HEADER: &[&str] = &[
     "Strength",
     "Clip frame rate",
     "Timeline frame rate",
+    "Stars",
+    "Kept by hand",
+    "Scene",
+    "Light",
+    "Camera",
+    "Keywords",
+    "Problems",
+    "Extra before (seconds)",
+    "Extra after (seconds)",
 ];
 
 pub fn field(s: &str) -> String {
@@ -79,6 +88,18 @@ pub fn write(tl: &Timeline) -> String {
             m.tier.word().to_string(),
             native.label(),
             r.label(),
+            m.stars.to_string(),
+            if m.manual { "Yes".into() } else { "No".into() },
+            m.group.clone().unwrap_or_default(),
+            m.light.map(|l| l.words().to_string()).unwrap_or_default(),
+            match m.camera {
+                crate::selection::CameraMove::Still if m.camera_move => "Moving".into(),
+                c => c.words().to_string(),
+            },
+            m.keyword_line(),
+            m.problems.join("; "),
+            format!("{:.3}", r.frames_to_seconds(m.lead)),
+            format!("{:.3}", r.frames_to_seconds(m.tail)),
         ];
         out.push_str(&row.iter().map(|f| field(f)).collect::<Vec<_>>().join(","));
         out.push_str("\r\n");

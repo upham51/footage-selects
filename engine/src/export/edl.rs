@@ -34,11 +34,20 @@ pub fn write(tl: &Timeline) -> String {
     out.push_str(&format!("TITLE: {title}\r\n"));
     out.push_str(if drop { "FCM: DROP FRAME\r\n" } else { "FCM: NON-DROP FRAME\r\n" });
     out.push_str("\r\n");
+    let mut music_line = None;
+    if let Some(mu) = &tl.music {
+        let a = frames_to_timecode(0, r, drop);
+        let b = frames_to_timecode(mu.frames_used, r, drop);
+        let rin = frames_to_timecode(tl.start_frame, r, drop);
+        let rout = frames_to_timecode(tl.start_frame + mu.frames_used, r, drop);
+        music_line = Some(format!("{:03}  MUSIC    A     C        {a} {b} {rin} {rout}\r\n* FROM CLIP NAME: {}\r\n* SOURCE FILE: {}\r\n\r\n", (tl.selects.len() + 1) % 1000, one_line(&mu.name), one_line(&mu.path)));
+    }
     for (i, p) in tl.selects.iter().enumerate() {
         let s = &tl.sources[p.source];
         let m = p.select.as_ref().unwrap();
         let (src_in, src_out) = super::source_timecodes_at_timeline_rate(tl, p);
         let rec_in = frames_to_timecode(tl.start_frame + p.record_in, r, drop);
+        let marker_at = frames_to_timecode(tl.start_frame + p.record_in + m.lead, r, drop);
         let rec_out = frames_to_timecode(tl.start_frame + p.record_out(), r, drop);
         out.push_str(&format!(
             "{:03}  AX       V     C        {src_in} {src_out} {rec_in} {rec_out}\r\n",
@@ -54,12 +63,18 @@ pub fn write(tl: &Timeline) -> String {
             ));
         }
         out.push_str(&format!(
-            "* LOC: {rec_in} {:<7} {}. {}\r\n",
+            "* LOC: {marker_at} {:<7} {}. {}\r\n",
             locator_color(m.tier),
-            m.marker_name(),
-            m.marker_note()
+            one_line(&m.marker_name()),
+            one_line(&m.marker_note())
         ));
+        if !m.keywords.is_empty() {
+            out.push_str(&format!("* KEYWORDS: {}\r\n", one_line(&m.keyword_line())));
+        }
         out.push_str("\r\n");
+    }
+    if let Some(l) = music_line {
+        out.push_str(&l);
     }
     out
 }

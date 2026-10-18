@@ -182,12 +182,65 @@ pub fn write(tl: &Timeline) -> String {
         x.close();
         asset_ids.push(id);
     }
+    let music_id = tl.music.as_ref().map(|m| {
+        let id = format!("r{next}");
+        x.open(
+            "asset",
+            &[
+                ("id", id.clone()),
+                ("name", m.name.clone()),
+                ("start", "0s".into()),
+                ("duration", Time::frames(m.frames_total, r).fcp()),
+                ("hasAudio", "1".into()),
+                ("audioSources", "1".into()),
+                ("audioChannels", m.channels.clamp(1, 2).to_string()),
+                ("audioRate", (if m.sample_rate > 0 { m.sample_rate } else { 48000 }).to_string()),
+            ],
+        );
+        x.empty("media-rep", &[("kind", "original-media".into()), ("src", file_url(&m.path, false))]);
+        x.close();
+        id
+    });
     x.close(); // resources
 
     let tc_start = Time::frames(tl.start_frame, r);
     let total = Time::frames(tl.duration, r);
     x.open("library", &[]);
     x.open("event", &[("name", crate::PRODUCT_NAME.into())]);
+    // Browser clips carrying each select's keywords as keyword ranges, so
+    // Final Cut Pro builds keyword collections (Golden hour, Pan, Strong, a
+    // scene name) in the event, plus favorites for starred selects.
+    for (si, s) in tl.sources.iter().enumerate() {
+        let picks: Vec<&Placed> = tl.selects.iter().filter(|p| p.source == si).collect();
+        if picks.is_empty() {
+            continue;
+        }
+        let native = s.info.rate;
+        let start = Time::frames(s.tc_frames, native);
+        x.open(
+            "asset-clip",
+            &[
+                ("ref", asset_ids[si].clone()),
+                ("offset", "0s".into()),
+                ("name", s.info.name.clone()),
+                ("start", start.fcp()),
+                ("duration", Time::frames(s.frames_native, native).fcp()),
+                ("tcFormat", tc_format(s.tc_drop, native).into()),
+            ],
+        );
+        for p in picks {
+            let m = p.select.as_ref().unwrap();
+            let a = start.add(Time::frames(p.source_in_native, native)).add(Time::frames(m.lead, r));
+            let d = Time::frames((p.duration - m.lead - m.tail).max(1), r);
+            if !m.keywords.is_empty() {
+                x.empty("keyword", &[("start", a.fcp()), ("duration", d.fcp()), ("value", m.keyword_line())]);
+            }
+            if m.stars >= 4 || m.manual {
+                x.empty("rating", &[("start", a.fcp()), ("duration", d.fcp()), ("value", "favorite".into())]);
+            }
+        }
+        x.close();
+    }
     x.open("project", &[("name", tl.name.clone())]);
     x.open(
         "sequence",
@@ -217,12 +270,15 @@ pub fn write(tl: &Timeline) -> String {
             ("duration", Time::frames(p.duration, r).fcp()),
             ("tcFormat", tc_format(s.tc_drop, s.info.rate).into()),
         ];
-        if video_only && s.info.has_audio {
+        if (video_only || !tl.select_audio) && s.info.has_audio {
             attrs.push(("srcEnable", "video".into()));
         }
         x.open("asset-clip", &attrs);
+        if tl.fill {
+            x.empty("adjust-conform", &[("type", "fill".into())]);
+        }
         let mut marker = vec![
-            ("start", start.fcp()),
+            ("start", start.add(Time::frames(m.lead, r)).fcp()),
             ("duration", Time::frames(1, r).fcp()),
             ("value", m.marker_name()),
             ("note", m.marker_note()),
@@ -231,6 +287,9 @@ pub fn write(tl: &Timeline) -> String {
             marker.push(("completed", c.into()));
         }
         x.empty("marker", &marker);
+        if !m.keywords.is_empty() {
+            x.empty("keyword", &[("start", start.fcp()), ("duration", Time::frames(p.duration, r).fcp()), ("value", m.keyword_line())]);
+        }
         x.close();
     };
 
@@ -276,6 +335,21 @@ pub fn write(tl: &Timeline) -> String {
                     ("duration", total.fcp()),
                 ],
             );
+            if let (Some(m), Some(id)) = (&tl.music, &music_id) {
+                // The music sits under the selects, starting with the timeline.
+                x.empty(
+                    "asset-clip",
+                    &[
+                        ("ref", id.clone()),
+                        ("lane", "-1".into()),
+                        ("offset", tc_start.fcp()),
+                        ("name", m.name.clone()),
+                        ("start", "0s".into()),
+                        ("duration", Time::frames(m.frames_used, r).fcp()),
+                        ("audioRole", "music".into()),
+                    ],
+                );
+            }
             for p in &tl.selects {
                 connected(&mut x, p, tc_start, 0, false);
             }

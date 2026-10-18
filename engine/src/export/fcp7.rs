@@ -122,9 +122,64 @@ fn clipitem(
         x.close();
         x.open("comments", &[]);
         x.text("mastercomment1", m.marker_note());
+        if !m.keywords.is_empty() {
+            x.text("mastercomment2", m.keyword_line());
+        }
+        x.close();
+        // Logging fields: Premiere Pro shows them as Description, Scene,
+        // Shot/Take, Log Note and Good; DaVinci Resolve reads them into clip metadata.
+        x.open("logginginfo", &[]);
+        x.text("description", m.marker_note());
+        x.text("scene", m.group.clone().unwrap_or_default());
+        x.text("shottake", format!("Select {}", m.number));
+        x.text("lognote", m.keyword_line());
+        x.text("good", if m.stars >= 4 || m.manual || m.tier == Tier::Strong { "TRUE" } else { "FALSE" });
         x.close();
     }
     x.close();
+}
+
+/// The music file under a reel, as an audio clip on its own track.
+fn music_tracks(x: &mut Xml, tl: &Timeline) {
+    let Some(m) = &tl.music else { return };
+    let channels = m.channels.clamp(1, 2);
+    for ch in 1..=channels {
+        x.open("track", &[]);
+        x.open("clipitem", &[("id", format!("clipitem-music-{ch}"))]);
+        x.text("name", &m.name);
+        x.text("enabled", "TRUE");
+        x.text("duration", m.frames_total);
+        rate(x, tl.rate);
+        x.text("start", 0);
+        x.text("end", m.frames_used);
+        x.text("in", 0);
+        x.text("out", m.frames_used);
+        if ch == 1 {
+            x.open("file", &[("id", "file-music".to_string())]);
+            x.text("name", &m.name);
+            x.text("pathurl", file_url(&m.path, true));
+            rate(x, tl.rate);
+            x.text("duration", m.frames_total);
+            x.open("media", &[]);
+            x.open("audio", &[]);
+            x.open("samplecharacteristics", &[]);
+            x.text("depth", 16);
+            x.text("samplerate", if m.sample_rate > 0 { m.sample_rate } else { 48000 });
+            x.close();
+            x.text("channelcount", channels);
+            x.close();
+            x.close();
+            x.close();
+        } else {
+            x.empty("file", &[("id", "file-music".to_string())]);
+        }
+        x.open("sourcetrack", &[]);
+        x.text("mediatype", "audio");
+        x.text("trackindex", ch);
+        x.close();
+        x.close();
+        x.close();
+    }
 }
 
 fn audio_tracks(x: &mut Xml, tl: &Timeline, items: &[Placed], written: &mut [bool]) {
@@ -199,7 +254,10 @@ pub fn write(tl: &Timeline) -> String {
         TimelineLayout::FullClipsBelow => &tl.base,
         TimelineLayout::SelectsOnly => &tl.selects,
     };
-    audio_tracks(&mut x, tl, sound, &mut written);
+    if tl.layout == TimelineLayout::FullClipsBelow || tl.select_audio {
+        audio_tracks(&mut x, tl, sound, &mut written);
+    }
+    music_tracks(&mut x, tl);
     x.close(); // audio
     x.close(); // media
     // One marker per select on the timeline, named and noted with its scores.
@@ -208,7 +266,7 @@ pub fn write(tl: &Timeline) -> String {
         x.open("marker", &[]);
         x.text("comment", m.marker_note());
         x.text("name", m.marker_name());
-        x.text("in", p.record_in);
+        x.text("in", p.record_in + m.lead);
         x.text("out", -1);
         x.text("pproColor", ppro_color(m.tier));
         x.close();

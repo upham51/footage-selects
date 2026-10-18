@@ -9,7 +9,7 @@
 //! hardware decoding is requested where available with a software fallback.
 
 use crate::ffmpeg;
-use crate::metrics::{measure_frame, FrameMetrics, MotionFrame, LADDER_LEN};
+use crate::metrics::{measure_frame_yuv, FrameMetrics, MotionFrame, LADDER_LEN};
 use crate::probe::{friendly_ffmpeg_error, ClipInfo};
 use serde::{Deserialize, Serialize};
 use std::io::Read;
@@ -18,7 +18,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 /// Bump when measurements change meaning, so cached results are redone.
-pub const ANALYSIS_VERSION: u32 = 4;
+pub const ANALYSIS_VERSION: u32 = 5;
 pub const DEFAULT_ANALYSIS_WIDTH: u32 = 480;
 pub const DEFAULT_SAMPLE_RATE: f64 = 4.0;
 
@@ -27,6 +27,8 @@ pub struct AnalyzeOptions {
     pub sample_rate: f64,
     pub width: u32,
     pub hardware_decode: bool,
+    /// Measure the sound too.
+    pub audio: bool,
 }
 
 impl Default for AnalyzeOptions {
@@ -35,6 +37,7 @@ impl Default for AnalyzeOptions {
             sample_rate: DEFAULT_SAMPLE_RATE,
             width: DEFAULT_ANALYSIS_WIDTH,
             hardware_decode: true,
+            audio: true,
         }
     }
 }
@@ -64,6 +67,23 @@ pub struct FrameTable {
     /// Picture fingerprints: whole frame, 2.39:1 centre and 9:16 centre.
     #[serde(default)]
     pub fp: Vec<[u64; 3]>,
+    /// Horizon roll in degrees and how sure the reading is (analysis version 5 and later).
+    #[serde(default)]
+    pub roll: Vec<f32>,
+    #[serde(default)]
+    pub roll_conf: Vec<f32>,
+    /// Flicker banding and rolling-shutter wobble against the previous sample; negative when not measured.
+    #[serde(default)]
+    pub flicker: Vec<f32>,
+    #[serde(default)]
+    pub wobble: Vec<f32>,
+    /// White balance: average chroma of near-neutral pixels, when `wb_ok` is 1.
+    #[serde(default)]
+    pub cb: Vec<f32>,
+    #[serde(default)]
+    pub cr: Vec<f32>,
+    #[serde(default)]
+    pub wb_ok: Vec<u8>,
 }
 
 fn round4(v: f32) -> f32 {
@@ -96,6 +116,17 @@ impl FrameTable {
         self.vmax.push(m.vmax);
         self.top.push(round4(m.top));
         self.fp.push(m.fp);
+        self.roll.push((m.roll * 100.0).round() / 100.0);
+        self.roll_conf.push((m.roll_conf * 100.0).round() / 100.0);
+        self.flicker.push(round4(m.flicker));
+        self.wobble.push((m.wobble * 1000.0).round() / 1000.0);
+        self.cb.push((m.cb * 100.0).round() / 100.0);
+        self.cr.push((m.cr * 100.0).round() / 100.0);
+        self.wb_ok.push(m.wb_ok as u8);
+    }
+    /// True when horizon, flicker, wobble and white balance were measured (analysis version 5 and later).
+    pub fn has_picture_checks(&self) -> bool {
+        !self.lap.is_empty() && self.roll.len() == self.lap.len() && self.wb_ok.len() == self.lap.len()
     }
     /// True when the exposure ladder and fingerprints were measured (analysis version 3 and later).
     pub fn has_ladder(&self) -> bool {
@@ -116,6 +147,13 @@ impl FrameTable {
             vmax: self.vmax.get(i).copied().unwrap_or(0),
             top: self.top.get(i).copied().unwrap_or(0.0),
             fp: self.fp.get(i).copied().unwrap_or_default(),
+            roll: self.roll.get(i).copied().unwrap_or(0.0),
+            roll_conf: self.roll_conf.get(i).copied().unwrap_or(0.0),
+            flicker: self.flicker.get(i).copied().unwrap_or(-1.0),
+            wobble: self.wobble.get(i).copied().unwrap_or(-1.0),
+            cb: self.cb.get(i).copied().unwrap_or(0.0),
+            cr: self.cr.get(i).copied().unwrap_or(0.0),
+            wb_ok: self.wb_ok.get(i).copied().unwrap_or(0) != 0,
         }
     }
     pub fn extend_from(&mut self, other: &FrameTable) {
@@ -133,6 +171,13 @@ impl FrameTable {
         self.vmax.extend_from_slice(&other.vmax);
         self.top.extend_from_slice(&other.top);
         self.fp.extend_from_slice(&other.fp);
+        self.roll.extend_from_slice(&other.roll);
+        self.roll_conf.extend_from_slice(&other.roll_conf);
+        self.flicker.extend_from_slice(&other.flicker);
+        self.wobble.extend_from_slice(&other.wobble);
+        self.cb.extend_from_slice(&other.cb);
+        self.cr.extend_from_slice(&other.cr);
+        self.wb_ok.extend_from_slice(&other.wb_ok);
     }
 }
 
@@ -154,6 +199,62 @@ pub struct ClipAnalysis {
     /// True when only the sampled frames were decoded (all-intra footage).
     #[serde(default)]
     pub sampled_only: bool,
+    /// Sound measurements, when the clip has sound and it could be read.
+    #[serde(default)]
+    pub audio: Option<crate::audio::AudioTable>,
+    /// What the sound measurements found, worked out once when the clip was analysed.
+    #[serde(default)]
+    pub sound: Option<SoundMap>,
+    /// Why the sound could not be measured, in plain words, when it has sound but reading it failed.
+    #[serde(default)]
+    pub audio_error: Option<String>,
+}
+
+/// Where someone talks and where the pauses are, so selection can cut in a
+/// pause without going through the whole sound table on every slider move.
+#[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
+pub struct SoundMap {
+    pub summary: crate::audio::AudioSummary,
+    /// Stretches with someone talking, in seconds.
+    pub talking: Vec<(f64, f64)>,
+    /// Quiet gaps between and around the talking, in seconds.
+    pub pauses: Vec<(f64, f64)>,
+}
+
+/// Shortest quiet gap that counts as a pause to cut in.
+pub const PAUSE_MIN: f32 = 0.25;
+
+impl SoundMap {
+    pub fn from_table(t: &crate::audio::AudioTable) -> SoundMap {
+        let summary = crate::audio::summarize(t);
+        let mut talking = Vec::new();
+        let mut pauses = Vec::new();
+        if summary.has_speech {
+            let flags = crate::audio::talking(t);
+            let step = t.step as f64;
+            let mut i = 0;
+            while i < flags.len() {
+                if flags[i] {
+                    let mut j = i;
+                    while j + 1 < flags.len() && flags[j + 1] {
+                        j += 1;
+                    }
+                    talking.push((i as f64 * step, (j + 1) as f64 * step));
+                    i = j + 1;
+                } else {
+                    i += 1;
+                }
+            }
+            pauses = crate::audio::pauses(t, PAUSE_MIN);
+        }
+        SoundMap { summary, talking, pauses }
+    }
+
+    /// True when someone is talking at `t` seconds.
+    pub fn talking_at(&self, t: f64) -> bool {
+        let i = self.talking.partition_point(|s| s.1 <= t);
+        self.talking.get(i).map(|s| s.0 <= t).unwrap_or(false)
+    }
 }
 
 impl ClipAnalysis {
@@ -168,6 +269,9 @@ impl ClipAnalysis {
             decoder: String::new(),
             elapsed: 0.0,
             sampled_only: false,
+            audio: None,
+            sound: None,
+            audio_error: None,
         }
     }
 }
@@ -333,6 +437,35 @@ pub fn analyze_clip(
     mut on_progress: impl FnMut(Progress),
 ) -> Result<ClipAnalysis, AnalyzeError> {
     let started = std::time::Instant::now();
+    // Sound is read by its own ffmpeg alongside the picture; it is quick
+    // next to video decoding and never holds the picture back.
+    let (result, sound) = std::thread::scope(|scope| {
+        let sound = (info.has_audio && opts.audio).then(|| scope.spawn(|| crate::audio::analyze_audio(info, cancel)));
+        let result = analyze_picture(info, opts, cancel, started, &mut on_progress);
+        let sound = sound.map(|h| h.join().unwrap_or_else(|_| Err(AnalyzeError::Decode("The sound reader stopped unexpectedly.".into()))));
+        (result, sound)
+    });
+    let mut a = result?;
+    match sound {
+        Some(Ok(Some(t))) => {
+            a.sound = Some(SoundMap::from_table(&t));
+            a.audio = Some(t);
+        }
+        Some(Ok(None)) | None => {}
+        Some(Err(AnalyzeError::Cancelled)) => return Err(AnalyzeError::Cancelled),
+        Some(Err(e)) => a.audio_error = Some(format!("The sound could not be checked: {e} The picture scores are not affected.")),
+    }
+    a.elapsed = started.elapsed().as_secs_f64();
+    Ok(a)
+}
+
+fn analyze_picture(
+    info: &ClipInfo,
+    opts: &AnalyzeOptions,
+    cancel: &AtomicBool,
+    started: std::time::Instant,
+    on_progress: &mut dyn FnMut(Progress),
+) -> Result<ClipAnalysis, AnalyzeError> {
     let attempts = decoder_order(info, opts.hardware_decode);
     let mut last_err = AnalyzeError::Decode("No frames came out of the decoder.".into());
     let last = *attempts.last().unwrap();
@@ -377,8 +510,19 @@ pub fn decodes_sampled_frames_only(info: &ClipInfo) -> bool {
     ffmpeg::input_bsf_supported() && crate::probe::is_intra_only(std::path::Path::new(&info.path))
 }
 
+/// The pixel format frames come down the pipe in: full-range YUV 4:2:0. Its
+/// luma plane is byte for byte the full-range gray picture the measurements
+/// were designed on (video black 0, white 255); the two quarter-size chroma
+/// planes add white balance.
+pub const PIPE_FORMAT: &str = "yuvj420p";
+
+/// Bytes of one frame in `PIPE_FORMAT` at an even size.
+pub fn pipe_frame_bytes(w: u32, h: u32) -> usize {
+    (w * h + 2 * (w / 2) * (h / 2)) as usize
+}
+
 /// The ffmpeg command that decodes `info` with `decoder` and writes small
-/// gray frames to stdout, one `showinfo` line per frame on stderr. With
+/// frames to stdout, one `showinfo` line per frame on stderr. With
 /// `intra_only` (see `decodes_sampled_frames_only`), packets between samples
 /// never reach the decoder, so a 120 fps all-intra clip sampled 4 times a
 /// second decodes 4 frames a second, not 120.
@@ -388,7 +532,7 @@ pub fn decoder_command(info: &ClipInfo, opts: &AnalyzeOptions, decoder: Decoder,
     let select = format!("select='isnan(prev_selected_t)+gt(floor(t*{r}),floor(prev_selected_t*{r}))'");
     let filter = match decoder {
         Decoder::GpuScaled => gpu_filter(info, &select, w, h, "scale_vt=w={w}:h={h},hwdownload,format={dl}"),
-        _ => format!("{select},scale={w}:{h}:flags=area,format=gray,showinfo"),
+        _ => format!("{select},scale={w}:{h}:flags=area,format={PIPE_FORMAT},showinfo"),
     };
     let mut cmd = ffmpeg::command("ffmpeg");
     // Verbose so ffmpeg reports the pixel format frames arrive in, which says
@@ -415,7 +559,7 @@ pub fn decoder_command(info: &ClipInfo, opts: &AnalyzeOptions, decoder: Decoder,
     }
     cmd.arg("-i").arg(&info.path);
     cmd.args(["-map", "0:v:0", "-an", "-sn", "-dn", "-vf", &filter]);
-    cmd.args(["-fps_mode", "passthrough", "-f", "rawvideo", "-pix_fmt", "gray", "pipe:1"]);
+    cmd.args(["-fps_mode", "passthrough", "-f", "rawvideo", "-pix_fmt", PIPE_FORMAT, "pipe:1"]);
     cmd.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
     cmd
 }
@@ -428,8 +572,8 @@ pub fn gpu_filter(info: &ClipInfo, select: &str, w: u32, h: u32, scale: &str) ->
     let dl = videotoolbox_download_format(&info.pix_fmt).unwrap_or("nv12");
     let scale = scale.replace("{w}", &sw.to_string()).replace("{h}", &sh.to_string()).replace("{dl}", dl);
     match rotation_filter(info.rotation) {
-        Some(rot) => format!("{select},{scale},format=gray,{rot},showinfo"),
-        None => format!("{select},{scale},format=gray,showinfo"),
+        Some(rot) => format!("{select},{scale},format={PIPE_FORMAT},{rot},showinfo"),
+        None => format!("{select},{scale},format={PIPE_FORMAT},showinfo"),
     }
 }
 
@@ -445,9 +589,9 @@ pub fn decoded_frames(info: &ClipInfo, opts: &AnalyzeOptions) -> Result<(Vec<Vec
             .map_err(|e| AnalyzeError::ToolMissing(e.to_string()))?;
         let mut stdout = child.stdout.take().expect("stdout piped");
         let mut frames = Vec::new();
-        let mut buf = vec![0u8; (w * h) as usize];
+        let mut buf = vec![0u8; pipe_frame_bytes(w, h)];
         while let Ok(true) = read_full(&mut stdout, &mut buf) {
-            frames.push(buf.clone());
+            frames.push(buf[..(w * h) as usize].to_vec());
         }
         let _ = child.wait();
         if !frames.is_empty() {
@@ -504,7 +648,9 @@ fn run_decoder(
     });
 
     let mut stdout = child.stdout.take().expect("stdout piped");
-    let frame_bytes = (w * h) as usize;
+    let frame_bytes = pipe_frame_bytes(w, h);
+    let luma = (w * h) as usize;
+    let chroma = ((w / 2) * (h / 2)) as usize;
     let mut buf = vec![0u8; frame_bytes];
     let mut prev: Option<MotionFrame> = None;
     let mut analysis = ClipAnalysis::empty(opts.sample_rate, w, h);
@@ -529,7 +675,9 @@ fn run_decoder(
             Err(_) => expected,
         };
         last_t = Some(t);
-        let (m, proj) = measure_frame(&buf, w as usize, h as usize, prev.as_ref());
+        let (y, rest) = buf.split_at(luma);
+        let (u, v) = rest.split_at(chroma);
+        let (m, proj) = measure_frame_yuv(y, u, v, w as usize, h as usize, prev.as_ref());
         prev = Some(proj);
         pending.push(t, &m);
         if pending.len() >= 8 {

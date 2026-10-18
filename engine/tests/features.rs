@@ -122,7 +122,7 @@ fn the_camera_filter_cuts_where_the_camera_starts_moving_and_sets_aside_the_rest
     st.camera = CameraFilter::Tilts;
     let tilts = select_clip(&s, 20.0, &st);
     assert_eq!(tilts.kept().count(), 0);
-    assert_eq!(no_select_reason(&tilts, &st), Some(NoSelectReason::SetAside { camera: 3, repeats: 0 }));
+    assert_eq!(no_select_reason(&tilts, &st), Some(NoSelectReason::SetAside { camera: 3, repeats: 0, light: 0, sound: 0, dropped: 0 }));
 }
 
 #[test]
@@ -242,7 +242,7 @@ fn repeated_takes_across_clips_are_found_and_can_be_set_aside() {
     }
     let reasons: Vec<_> = sels.iter().filter_map(|s| no_select_reason(s, &p.selection)).collect();
     assert_eq!(reasons.len(), 2);
-    assert!(reasons.iter().all(|r| matches!(r, NoSelectReason::SetAside { camera: 0, repeats } if *repeats >= 1)));
+    assert!(reasons.iter().all(|r| matches!(r, NoSelectReason::SetAside { camera: 0, repeats, .. } if *repeats >= 1)));
 
     // A setting of a clip on its own never sees other clips.
     let alone = p.clips[1].select(&p.selection, None);
@@ -340,6 +340,14 @@ fn marker_notes_name_the_camera_move() {
         exposure_note: None,
         camera_move,
         camera,
+        stars: 0,
+        manual: false,
+        group: None,
+        light: None,
+        problems: vec![],
+        keywords: vec![],
+        lead: 0,
+        tail: 0,
     };
     assert!(meta(true, CameraMove::PanLeft).marker_note().ends_with(" Pan left."));
     assert!(meta(true, CameraMove::TiltUp).marker_note().ends_with(" Tilt up."));
