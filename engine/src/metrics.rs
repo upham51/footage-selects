@@ -56,7 +56,7 @@ pub struct FrameMetrics {
     /// brightness. Negative when it could not be measured (the camera moved).
     pub flicker: f32,
     /// Rolling-shutter wobble against the previous sample, in pixels of the
-    /// half-size picture. Negative when it could not be measured.
+    /// analysis picture. Negative when it could not be measured.
     pub wobble: f32,
     /// Average chroma of near-neutral pixels (Cb and Cr minus 128), for white
     /// balance. Only meaningful when `wb_ok`.
@@ -186,6 +186,8 @@ pub struct MotionFrame {
     pub levels: Vec<Plane>,
     /// Mean of each row of the analysis picture, for flicker.
     pub rows: Vec<f32>,
+    /// The same in vertical strips (`picture::strip_row_means`).
+    pub strips: Vec<Vec<f32>>,
 }
 
 /// Coarsest level used for the search (1/8 of 480 is 60 pixels wide).
@@ -207,7 +209,11 @@ pub fn motion_frame(gray: &[u8], w: usize, h: usize) -> MotionFrame {
         let next = last.half();
         levels.push(next);
     }
-    MotionFrame { levels, rows: crate::picture::row_means(gray, w, h) }
+    MotionFrame {
+        levels,
+        rows: crate::picture::row_means(gray, w, h),
+        strips: crate::picture::strip_row_means(gray, w, h),
+    }
 }
 
 /// Mean absolute difference between `cur` and `prev` displaced by (sx, sy),
@@ -419,7 +425,7 @@ pub fn estimate_shift(prev: &MotionFrame, cur: &MotionFrame) -> (f32, f32, bool)
 /// counts as still enough to compare rows for flicker.
 pub const FLICKER_STILL_SHIFT: f32 = 1.0;
 /// Largest shift, in analysis pixels, at which wobble is still measured: the
-/// band search covers a few pixels around the global shift at half size.
+/// band search covers a few pixels around the global shift.
 pub const WOBBLE_MAX_SHIFT: f32 = 60.0;
 
 /// Measure one frame from its full-range YUV 4:2:0 planes: everything
@@ -460,10 +466,16 @@ pub fn measure_frame(
     let mut wobble = -1.0;
     if let Some(p) = prev {
         if motion_ok && dx.abs() < FLICKER_STILL_SHIFT && dy.abs() < FLICKER_STILL_SHIFT && p.rows.len() == proj.rows.len() {
-            flicker = crate::picture::flicker_strength(&p.rows, &proj.rows);
+            flicker = crate::picture::flicker_strength_strips(&p.rows, &proj.rows, &p.strips, &proj.strips);
         }
-        if motion_ok && dx.abs() < WOBBLE_MAX_SHIFT && dy.abs() < WOBBLE_MAX_SHIFT && p.levels.len() > 1 && proj.levels.len() > 1 {
-            wobble = crate::picture::wobble(&p.levels[1], &proj.levels[1], dx / 2.0, dy / 2.0);
+        // Strong wobble bends the picture so much that lining up the whole
+        // frame barely helps, which leaves the move unmeasured with no shift
+        // (see `estimate_shift`). Wobble is still measured then, around no
+        // shift: its band search reaches a few pixels either way, and its
+        // reading cancels for a subject moving on one side only.
+        let unmeasured_small = !motion_ok && dx == 0.0 && dy == 0.0;
+        if ((motion_ok && dx.abs() < WOBBLE_MAX_SHIFT && dy.abs() < WOBBLE_MAX_SHIFT) || unmeasured_small) && !p.levels.is_empty() && !proj.levels.is_empty() {
+            wobble = crate::picture::wobble(&p.levels[0], &proj.levels[0], dx, dy);
         }
     }
     (

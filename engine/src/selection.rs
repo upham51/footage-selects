@@ -119,8 +119,9 @@ pub const ROLL_MIN_CONFIDENCE: f32 = 0.35;
 pub const CROOKED_DEGREES: f32 = 1.0;
 /// Flicker bands swinging this share of brightness or more are called flicker.
 pub const FLICKER_SHARE: f32 = 0.012;
-/// Rolling-shutter wobble of this many half-size pixels or more is called jello.
-pub const WOBBLE_PIXELS: f32 = 0.35;
+/// Rolling-shutter wobble of this many analysis pixels or more is called jello
+/// (about 4 pixels of a 4K frame).
+pub const WOBBLE_PIXELS: f32 = 0.5;
 /// How far a select's start or end may move to land in a pause, in seconds.
 pub const PAUSE_REACH: f64 = 2.0;
 
@@ -297,7 +298,7 @@ pub struct Segment {
     /// Light flicker banding, as a share of brightness, when it could be measured.
     #[serde(default)]
     pub flicker: Option<f32>,
-    /// Rolling-shutter wobble in half-size pixels, when it could be measured.
+    /// Rolling-shutter wobble in analysis pixels, when it could be measured.
     #[serde(default)]
     pub wobble: Option<f32>,
     /// Average chroma of near-neutral parts of the picture (Cb, Cr), for white balance.
@@ -904,6 +905,15 @@ pub fn select_candidates_with(scores: &ScoreSeries, end_time: f64, s: &Selection
     }
 }
 
+/// The value a quarter of the way down from the top of a list, or None for an empty one.
+fn upper_quartile(mut v: Vec<f32>) -> Option<f32> {
+    if v.is_empty() {
+        return None;
+    }
+    v.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    Some(v[(v.len() * 3) / 4])
+}
+
 /// Middle value of a list, or None for an empty one.
 fn median(mut v: Vec<f32>) -> Option<f32> {
     if v.is_empty() {
@@ -921,9 +931,13 @@ fn add_checks(sm: &ScoreSeries, bounds: &[f64], g: &mut Segment, x: &ClipExtras)
         if rolls.len() >= 2 && rolls.len() * 5 >= idx.len() * 2 {
             g.roll = median(rolls).map(|r| (r * 10.0).round() / 10.0);
         }
+        // Bands only show when they moved between the two samples, and with
+        // samples a whole number of mains cycles apart they hardly move, so
+        // many pairs read low however strong the flicker. The upper quartile
+        // tells flicker that shows in a good part of the stretch.
         let flick: Vec<f32> = idx.iter().map(|&i| f.flicker[i]).filter(|&v| v >= 0.0).collect();
         if flick.len() >= 3 {
-            g.flicker = median(flick);
+            g.flicker = upper_quartile(flick);
         }
         let wob: Vec<f32> = idx.iter().map(|&i| f.wobble[i]).filter(|&v| v >= 0.0).collect();
         if wob.len() >= 3 {
