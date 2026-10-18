@@ -33,7 +33,7 @@ jobs:
           node-version: 22
       - run: npm ci
       - run: npm test
-      - run: node --check ../site/site.js && node --check ../site/admin.js
+      - run: node --check ../site/site.js && node --check ../site/landing.js && node --check ../site/fs-signal.js && node --check ../site/admin.js
 
   app-check:
     name: App compiles (Linux)

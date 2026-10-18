@@ -11,6 +11,12 @@ export const PRODUCT_NAME = appConfig.productName;
 /** The public Turnstile site key from site/config.json, or "" when the check is not set up. */
 export const TURNSTILE_SITE_KEY = (siteConfig.turnstileSiteKey || "").trim();
 
+// Hosts the landing page itself loads from: the hero clips stream from Pexels and
+// the "who it is for" photos come from Unsplash. Replace these once the media is
+// hosted alongside the site.
+export const PAGE_MEDIA_HOSTS = ["https://videos.pexels.com"];
+export const PAGE_IMAGE_HOSTS = ["https://images.unsplash.com"];
+
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
 
 function originOf(src) {
@@ -34,8 +40,9 @@ export function pageValues(config = siteConfig, productName = PRODUCT_NAME, now 
     if (video.caption) demoHtml += `<p class="demo-caption">${esc(video.caption)}</p>`;
   }
 
-  const media = ["'self'", originOf(video.src)].filter(Boolean);
-  const images = ["'self'", "data:", originOf(video.poster)].filter(Boolean);
+  const uniq = (list) => [...new Set(list.filter(Boolean))];
+  const media = uniq(["'self'", ...PAGE_MEDIA_HOSTS, originOf(video.src)]);
+  const images = uniq(["'self'", "data:", ...PAGE_IMAGE_HOSTS, originOf(video.poster)]);
   const scripts = ["'self'", turnstile ? "https://challenges.cloudflare.com" : ""].filter(Boolean);
   const csp = [
     "default-src 'self'",
