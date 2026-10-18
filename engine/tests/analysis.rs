@@ -207,3 +207,90 @@ fn rotation_matches(clip: &std::path::Path) -> i32 {
     assert!(mean < 1.5, "rotation {}: frames differ by {mean:.2} levels on average; it is the wrong way round", info.rotation);
     info.rotation
 }
+
+/// Mean distance in analysis pixels between the measured and the true camera
+/// movement of each sample, and how many samples had no measurement.
+fn sway_error(a: &ClipAnalysis) -> (f32, usize) {
+    // The 1280 px crop is analysed at 480 px; content moves opposite to the crop window.
+    let k = a.width as f64 / 1280.0;
+    let f = &a.frames;
+    let mut err = Vec::new();
+    let mut unmeasured = 0;
+    for i in 1..f.len() {
+        if f.motion_ok[i] == 0 {
+            unmeasured += 1;
+            continue;
+        }
+        let (x0, y0) = common::sway_position(f.t[i - 1] as f64);
+        let (x1, y1) = common::sway_position(f.t[i] as f64);
+        let (tx, ty) = (-(x1 - x0) * k, -(y1 - y0) * k);
+        err.push(((f.dx[i] as f64 - tx).hypot(f.dy[i] as f64 - ty)) as f32);
+    }
+    (mean(&err), unmeasured)
+}
+
+#[test]
+fn noise_in_night_footage_is_not_read_as_shake_or_stillness() {
+    let f = common::night_footage();
+    let (day_a, day) = analyse(&f.day_sway);
+    let (night_a, night) = analyse(&f.night_sway);
+    let (de, du) = sway_error(&day_a);
+    let (ne, nu) = sway_error(&night_a);
+    println!("sway error day {de:.2} px ({du} unmeasured), night {ne:.2} px ({nu} unmeasured)");
+    // Before the fix, noisy samples where the camera moved a pixel or two read
+    // as "not moving", and the night error was over twice the day error. Now
+    // they are measured, or left unmeasured and filled in from their neighbours.
+    assert!(nu * 4 <= night_a.frames.len(), "night samples without a measurement: {nu}");
+    assert!(ne < 0.65, "night motion error {ne}");
+    assert!(de < 0.6, "day motion error {de}");
+    let (ds, ns) = (mean(&day.stability), mean(&night.stability));
+    println!("stability day sway {ds:.3}, night sway {ns:.3}");
+    assert!((ds - ns).abs() < 0.08, "night sway {ns} should score like day sway {ds}");
+
+    let (_, tripod) = analyse(&f.night_tripod);
+    let (_, pan) = analyse(&f.night_pan);
+    let (ts, ps) = (mid(&tripod.stability), mid(&pan.stability));
+    println!("stability night tripod {ts:.3}, night pan {ps:.3}");
+    assert!(ts > 0.95, "night tripod {ts}");
+    assert!(ps > 0.9, "night pan {ps}");
+}
+
+#[test]
+fn rotated_clips_are_turned_upright_after_downsizing() {
+    let f = common::footage();
+    let (flat, _) = analyse(&f.panning);
+    let (rot, _) = analyse(&f.rotated_pan);
+    assert_eq!((rot.width, rot.height), (480, 854));
+    let n = flat.frames.len().min(rot.frames.len());
+    let m = |a: &ClipAnalysis| mean(&a.frames.mean[1..n]);
+    assert!((m(&flat) - m(&rot)).abs() < 1.0, "same picture, turned: {} vs {}", m(&flat), m(&rot));
+    // The pan is horizontal as recorded and vertical once turned upright.
+    let (dx, dy) = (mean(&rot.frames.dx[2..n - 1]), mean(&rot.frames.dy[2..n - 1]));
+    let fdx = mean(&flat.frames.dx[2..n - 1]);
+    println!("flat dx {fdx:.2}; rotated dx {dx:.2} dy {dy:.2}");
+    assert!(dx.abs() < 0.5, "rotated dx {dx}");
+    // The recorded 1280 px width becomes 854 analysis pixels tall instead of 480 wide.
+    assert!((dy.abs() - fdx.abs() * 854.0 / 480.0).abs() < 1.5, "rotated dy {dy}, flat dx {fdx}");
+}
+
+#[test]
+fn all_intra_clips_decode_only_the_sampled_frames_and_score_the_same() {
+    let f = common::footage();
+    assert!(selects_engine::probe::is_intra_only(&f.intra_pan));
+    assert!(!selects_engine::probe::is_intra_only(&f.panning));
+    let (long_gop, lg) = analyse(&f.panning);
+    let (intra, is) = analyse(&f.intra_pan);
+    // Older ffmpeg builds (before 7.1) cannot drop packets before decoding, and decode everything.
+    assert_eq!(intra.sampled_only, selects_engine::ffmpeg::input_bsf_supported());
+    assert!(!long_gop.sampled_only);
+    assert_eq!(intra.frames.len(), long_gop.frames.len(), "same samples");
+    for (a, b) in intra.frames.t.iter().zip(long_gop.frames.t.iter()) {
+        assert!((a - b).abs() < 0.05, "sample times {a} and {b}");
+    }
+    let (si, sl) = (mid(&is.stability), mid(&lg.stability));
+    let (dxi, dxl) = (mean(&intra.frames.dx[2..]), mean(&long_gop.frames.dx[2..]));
+    println!("intra: stability {si:.3} dx {dxi:.2}; long GOP: stability {sl:.3} dx {dxl:.2}");
+    assert!((dxi - dxl).abs() < 0.5);
+    assert!((si - sl).abs() < 0.1);
+}
+

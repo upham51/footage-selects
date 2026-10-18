@@ -33,6 +33,9 @@ fn video_codec() -> &'static [&'static str] {
 }
 
 fn run_ffmpeg(args: &[&str], out: &Path) {
+    // Tests run in parallel and share fixtures; generate one file at a time.
+    static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    let _guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
     if out.exists() {
         return;
     }
@@ -108,6 +111,10 @@ pub struct Footage {
     pub timecode_2997_df: PathBuf,
     pub variable_rate: PathBuf,
     pub rotated: PathBuf,
+    /// `panning` stored sideways with a 90 degree display rotation.
+    pub rotated_pan: PathBuf,
+    /// `panning` re-encoded so every frame stands alone (Motion JPEG).
+    pub intra_pan: PathBuf,
 }
 
 const CROP_STATIC: &str = "crop=1280:720:160:90";
@@ -180,6 +187,12 @@ fn generate() -> Footage {
         );
     }
 
+    let rotated_pan = fixtures_dir().join("rotated_pan.mp4");
+    run_ffmpeg(&["-display_rotation", "90", "-i", panning.to_str().unwrap(), "-c", "copy"], &rotated_pan);
+
+    let intra_pan = fixtures_dir().join("intra_pan.mov");
+    run_ffmpeg(&["-i", panning.to_str().unwrap(), "-c:v", "mjpeg", "-q:v", "3", "-pix_fmt", "yuvj420p"], &intra_pan);
+
     Footage {
         sharp,
         blurred,
@@ -195,10 +208,63 @@ fn generate() -> Footage {
         timecode_2997_df,
         variable_rate,
         rotated,
+        rotated_pan,
+        intra_pan,
     }
 }
 
 pub fn footage() -> &'static Footage {
     static F: OnceLock<Footage> = OnceLock::new();
     F.get_or_init(generate)
+}
+
+/// Handheld sway used by the night tests, as the crop window's top left
+/// corner in pixels of the 1600x900 texture at time `t`.
+pub fn sway_position(t: f64) -> (f64, f64) {
+    use std::f64::consts::PI;
+    (
+        160.0 + 12.0 * (2.0 * PI * 0.6 * t).sin() + 6.0 * (2.0 * PI * 1.3 * t + 1.0).sin(),
+        90.0 + 8.0 * (2.0 * PI * 0.5 * t + 2.0).sin() + 5.0 * (2.0 * PI * 1.7 * t).sin(),
+    )
+}
+
+/// The texture alone (no moving test pattern), so the camera movement is the
+/// only movement and is known exactly. 1280x720 at 23.976 fps, 6 seconds.
+fn texture_clip(name: &str, x: &str, y: &str, look: &str) -> PathBuf {
+    let out = fixtures_dir().join(name);
+    let tex = texture();
+    run_ffmpeg(
+        &[
+            "-loop", "1", "-framerate", "24000/1001", "-t", "6", "-i", tex.to_str().unwrap(),
+            "-vf", &format!("crop=1280:720:'{x}':'{y}',{look},format=yuv420p"),
+            "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p", "-g", "48",
+        ],
+        &out,
+    );
+    out
+}
+
+pub struct NightFootage {
+    /// Gentle handheld sway in daylight, following `sway_position`.
+    pub day_sway: PathBuf,
+    /// The same sway, dark and with heavy sensor noise.
+    pub night_sway: PathBuf,
+    /// Dark and noisy on a tripod.
+    pub night_tripod: PathBuf,
+    /// Dark and noisy, panning 40 px a second.
+    pub night_pan: PathBuf,
+}
+
+const SWAY_X: &str = "160+12*sin(2*PI*0.6*t)+6*sin(2*PI*1.3*t+1)";
+const SWAY_Y: &str = "90+8*sin(2*PI*0.5*t+2)+5*sin(2*PI*1.7*t)";
+const NIGHT: &str = "lutyuv=y='16+(val-16)*0.15',noise=alls=22:allf=t";
+
+pub fn night_footage() -> &'static NightFootage {
+    static F: OnceLock<NightFootage> = OnceLock::new();
+    F.get_or_init(|| NightFootage {
+        day_sway: texture_clip("day_sway.mp4", SWAY_X, SWAY_Y, "null"),
+        night_sway: texture_clip("night_sway.mp4", SWAY_X, SWAY_Y, NIGHT),
+        night_tripod: texture_clip("night_tripod.mp4", "160", "90", NIGHT),
+        night_pan: texture_clip("night_pan.mp4", "60+40*t", "90", NIGHT),
+    })
 }

@@ -211,6 +211,23 @@ fn profile_from_tags(json: &Value, video: &Value) -> Option<DetectedProfile> {
     })
 }
 
+/// Whether every frame of the clip's picture stands on its own (ProRes, DNxHR,
+/// all-intra H.264 or HEVC and the like), judged from the first 32 packets.
+/// Such clips can skip unwanted frames before decoding them at all.
+pub fn is_intra_only(path: &Path) -> bool {
+    let Ok(out) = ffmpeg::command("ffprobe")
+        .args(["-v", "error", "-select_streams", "v:0", "-read_intervals", "%+#32"])
+        .args(["-show_entries", "packet=flags", "-of", "csv=p=0"])
+        .arg(path)
+        .output()
+    else {
+        return false;
+    };
+    let text = String::from_utf8_lossy(&out.stdout);
+    let flags: Vec<&str> = text.lines().map(|l| l.trim()).filter(|l| !l.is_empty()).collect();
+    out.status.success() && flags.len() >= 8 && flags.iter().all(|f| f.starts_with('K'))
+}
+
 /// Turn a raw ffmpeg error line into something a person can act on.
 pub fn friendly_ffmpeg_error(line: &str) -> String {
     let l = line.to_ascii_lowercase();

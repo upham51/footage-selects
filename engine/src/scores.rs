@@ -197,10 +197,41 @@ pub fn motion_speeds(f: &FrameTable, width: u32) -> Vec<f32> {
         .collect()
 }
 
+/// Camera velocity at every sample, in analysis pixels per nominal sample
+/// interval, and whether it was measured.
+///
+/// Motion of sample i is measured from i-1 to i, so sample 0 has none of its
+/// own. Samples are not exactly evenly spaced (frames are skipped at the
+/// decoder, footage may be variable frame rate), so each shift is scaled to
+/// the nominal interval. A sample is unmeasured when its picture was
+/// featureless or too noisy to line up. An unmeasured sample with a non-zero
+/// shift moved faster than the search can follow; its shift is a lower bound
+/// and counts as measured.
+pub fn velocities(f: &FrameTable, nominal: f32) -> (Vec<(f32, f32)>, Vec<bool>) {
+    let n = f.len();
+    let mut v = vec![(0.0f32, 0.0f32); n];
+    let mut known = vec![false; n];
+    for j in 1..n {
+        let too_fast = f.motion_ok[j] == 0 && (f.dx[j] != 0.0 || f.dy[j] != 0.0);
+        if f.motion_ok[j] != 0 || too_fast {
+            let dt = f.t[j] - f.t[j - 1];
+            let scale = if dt > 1e-4 { nominal / dt } else { 1.0 };
+            v[j] = (f.dx[j] * scale, f.dy[j] * scale);
+            known[j] = true;
+        }
+    }
+    (v, known)
+}
+
 /// Stability separates smooth camera movement from shake. Each sample's
 /// motion is compared with the average of its neighbours: a steady pan or
 /// push has nearly constant motion (low jitter), handheld shake does not.
 /// Very fast movement (whip pans) costs a little on top.
+///
+/// Only measured samples are compared, skipping over unmeasured ones, so a
+/// sample that could not be lined up neither adds shake nor hides it. An
+/// unmeasured sample takes the average score of the nearest measured samples
+/// on each side. A clip with no measured motion at all scores as steady.
 pub fn stability_scores(f: &FrameTable, width: u32, sample_rate: f64) -> Vec<f32> {
     let n = f.len();
     let nominal = (1.0 / sample_rate.max(0.01)) as f32;
@@ -209,29 +240,35 @@ pub fn stability_scores(f: &FrameTable, width: u32, sample_rate: f64) -> Vec<f32
     if n == 0 {
         return out;
     }
-    // Motion of sample i is measured from i-1 to i. Sample 0 has none, so borrow sample 1.
-    // Samples are not exactly evenly spaced (frames are skipped at the decoder,
-    // footage may be variable frame rate), so motion is scaled to the nominal interval.
-    let vel = |i: usize| -> (f32, f32) {
-        let j = if i == 0 && n > 1 { 1 } else { i };
-        if j == 0 || f.motion_ok[j] == 0 {
-            return (0.0, 0.0);
-        }
-        let dt = f.t[j] - f.t[j - 1];
-        let scale = if dt > 1e-4 { nominal / dt } else { 1.0 };
-        (f.dx[j] * scale, f.dy[j] * scale)
-    };
-    for (i, o) in out.iter_mut().enumerate() {
-        let (vx, vy) = vel(i);
-        let (px, py) = vel(i.saturating_sub(1));
-        let (nx, ny) = vel((i + 1).min(n - 1));
+    let (v, known) = velocities(f, nominal);
+    let measured: Vec<usize> = (0..n).filter(|&i| known[i]).collect();
+    for (k, &i) in measured.iter().enumerate() {
+        let (vx, vy) = v[i];
+        let (px, py) = v[measured[k.saturating_sub(1)]];
+        let (nx, ny) = v[measured[(k + 1).min(measured.len() - 1)]];
         let jx = vx - 0.5 * (px + nx);
         let jy = vy - 0.5 * (py + ny);
         let jitter = (jx * jx + jy * jy).sqrt() / w;
         let speed = (vx * vx + vy * vy).sqrt() / w;
         let shake_pen = ramp(jitter, SHAKE_LOW, SHAKE_HIGH);
         let speed_pen = ramp(speed, SPEED_LOW, SPEED_HIGH) * 0.5;
-        *o = (1.0 - shake_pen) * (1.0 - speed_pen);
+        out[i] = (1.0 - shake_pen) * (1.0 - speed_pen);
+    }
+    if measured.is_empty() {
+        return out;
+    }
+    let scored = out.clone();
+    for i in 0..n {
+        if known[i] {
+            continue;
+        }
+        let before = measured.iter().rev().find(|&&m| m < i).map(|&m| scored[m]);
+        let after = measured.iter().find(|&&m| m > i).map(|&m| scored[m]);
+        out[i] = match (before, after) {
+            (Some(a), Some(b)) => 0.5 * (a + b),
+            (Some(a), None) | (None, Some(a)) => a,
+            (None, None) => 1.0,
+        };
     }
     out
 }
@@ -269,5 +306,52 @@ pub fn mean(v: &[f32]) -> f32 {
         0.0
     } else {
         v.iter().sum::<f32>() / v.len() as f32
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn table(dx: &[f32], ok: &[u8]) -> FrameTable {
+        let n = dx.len();
+        FrameTable {
+            t: (0..n).map(|i| i as f32 * 0.25).collect(),
+            lap: vec![100.0; n],
+            mean: vec![120.0; n],
+            lo: vec![0.0; n],
+            hi: vec![0.0; n],
+            p2: vec![20.0; n],
+            p98: vec![220.0; n],
+            dx: dx.to_vec(),
+            dy: vec![0.0; n],
+            motion_ok: ok.to_vec(),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn unmeasured_samples_neither_add_nor_hide_shake() {
+        // A steady pan of 4 px a sample with two samples that could not be lined up.
+        let pan = table(&[0.0, 4.0, 4.0, 0.0, 4.0, 4.0, 0.0, 4.0, 4.0], &[1, 1, 1, 0, 1, 1, 0, 1, 1]);
+        let s = stability_scores(&pan, 480, 4.0);
+        assert!(s.iter().all(|&v| v > 0.99), "{s:?}");
+        // The same samples read as "not moving" would be shake.
+        let misread = table(&[0.0, 4.0, 4.0, 0.0, 4.0, 4.0, 0.0, 4.0, 4.0], &[1; 9]);
+        let m = stability_scores(&misread, 480, 4.0);
+        assert!(m[3] < 0.8, "{m:?}");
+        // Shake around an unmeasured sample still shows.
+        let shaky = table(&[0.0, 9.0, -9.0, 0.0, -9.0, 9.0, -9.0], &[1, 1, 1, 0, 1, 1, 1]);
+        let k = stability_scores(&shaky, 480, 4.0);
+        assert!(k[3] < 0.5, "{k:?}");
+    }
+
+    #[test]
+    fn a_whip_pan_too_fast_to_follow_is_not_steady() {
+        // Unmeasured but with a shift: faster than the search can follow.
+        let whip = table(&[0.0, 2.0, 2.0, 160.0, 160.0, 160.0, 2.0, 2.0], &[1, 1, 1, 0, 0, 0, 1, 1]);
+        let s = stability_scores(&whip, 480, 4.0);
+        assert!(s[3] < 0.5 && s[6] < 0.5, "{s:?}");
+        assert!(s[4] < 1.0, "speed costs a little on top: {s:?}");
     }
 }

@@ -54,3 +54,36 @@ pub fn ffmpeg_version() -> Option<String> {
     let text = String::from_utf8_lossy(&out.stdout);
     text.lines().next().map(|s| s.to_string())
 }
+
+/// Hardware decoding methods this ffmpeg was built with, such as
+/// "videotoolbox" or "d3d11va". Asked once and remembered.
+pub fn hwaccels() -> &'static [String] {
+    static H: std::sync::OnceLock<Vec<String>> = std::sync::OnceLock::new();
+    H.get_or_init(|| {
+        let Ok(out) = command("ffmpeg").args(["-hide_banner", "-hwaccels"]).output() else {
+            return Vec::new();
+        };
+        String::from_utf8_lossy(&out.stdout)
+            .lines()
+            .skip_while(|l| !l.contains("acceleration methods"))
+            .skip(1)
+            .map(|l| l.trim().to_string())
+            .filter(|l| !l.is_empty())
+            .collect()
+    })
+}
+
+/// Whether this ffmpeg can run bitstream filters on an input before decoding
+/// (ffmpeg 7.1 and later; the copy that ships with the app can). Asked once.
+pub fn input_bsf_supported() -> bool {
+    static S: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *S.get_or_init(|| {
+        command("ffmpeg")
+            .args(["-hide_banner", "-v", "error", "-bsf:v", "null", "-f", "lavfi", "-i", "nullsrc=s=16x16:d=0.1"])
+            .args(["-frames:v", "1", "-f", "null", "-"])
+            .stdin(std::process::Stdio::null())
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false)
+    })
+}

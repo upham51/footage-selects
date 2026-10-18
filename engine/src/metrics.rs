@@ -240,6 +240,78 @@ fn row_difference(a: &[u8], b: &[u8], step: usize) -> u32 {
     }
 }
 
+/// Tiles across the picture for `shift_is_global`.
+const TILES_X: usize = 4;
+const TILES_Y: usize = 4;
+
+/// Tiles with detail needed before a weak shift is trusted. With fewer, a
+/// subject moving over a plain scene cannot be told from a camera move, and
+/// the sample is left unmeasured.
+const MIN_DETAILED_TILES: usize = 6;
+
+/// Like `shifted_difference`, but one mean absolute difference for each tile
+/// of a `TILES_X` by `TILES_Y` grid over `cur`. Tiles with no overlap get `f32::MAX`.
+pub fn tile_differences(prev: &Plane, cur: &Plane, sx: i32, sy: i32, step: usize) -> Vec<f32> {
+    let (w, h) = (cur.w as i32, cur.h as i32);
+    let mut acc = vec![0u64; TILES_X * TILES_Y];
+    let mut cnt = vec![0u64; TILES_X * TILES_Y];
+    if prev.w == cur.w && prev.h == cur.h && sx.abs() < w / 2 && sy.abs() < h / 2 {
+        let x0 = sx.max(0) as usize;
+        let x1 = (w + sx.min(0)) as usize;
+        let y0 = sy.max(0) as usize;
+        let y1 = (h + sy.min(0)) as usize;
+        let wu = cur.w;
+        for y in (y0..y1).step_by(step) {
+            let ty = (y * TILES_Y / cur.h).min(TILES_Y - 1);
+            let py = (y as i32 - sy) as usize;
+            for x in (x0..x1).step_by(step) {
+                let px = (x as i32 - sx) as usize;
+                let tx = (x * TILES_X / cur.w).min(TILES_X - 1);
+                let k = ty * TILES_X + tx;
+                acc[k] += (cur.px[y * wu + x] as i32 - prev.px[py * wu + px] as i32).unsigned_abs() as u64;
+                cnt[k] += 1;
+            }
+        }
+    }
+    acc.iter()
+        .zip(cnt.iter())
+        .map(|(&a, &n)| if n == 0 { f32::MAX } else { a as f32 / n as f32 })
+        .collect()
+}
+
+/// Whether a shift that only slightly improves the match is still a real
+/// movement of the whole picture.
+///
+/// In dark, noisy footage noise dominates the difference between two frames,
+/// so even a correct shift lowers it by only a few percent. A real camera
+/// move improves the match across the picture: in most tiles that have any
+/// detail, lining up by the shift recovers a good part of what misaligning by
+/// two more pixels would lose. A subject moving over a still, plain scene
+/// improves only the tiles it covers, and the plain tiles have no detail to
+/// tell either way, so it does not pass.
+pub fn shift_is_global(prev: &Plane, cur: &Plane, sx: i32, sy: i32) -> bool {
+    let still = tile_differences(prev, cur, 0, 0, 2);
+    let best = tile_differences(prev, cur, sx, sy, 2);
+    let around = [(2, 0), (-2, 0), (0, 2), (0, -2)].map(|(ox, oy)| tile_differences(prev, cur, sx + ox, sy + oy, 2));
+    let (mut detailed, mut agree) = (0usize, 0usize);
+    for k in 0..still.len() {
+        let (s, b) = (still[k], best[k]);
+        if s == f32::MAX || b == f32::MAX || around.iter().any(|a| a[k] == f32::MAX) {
+            continue;
+        }
+        let far = around.iter().map(|a| a[k]).sum::<f32>() / 4.0;
+        // A tile has detail when misaligning it visibly raises the difference.
+        if far - b <= 0.03 * b + 0.05 {
+            continue;
+        }
+        detailed += 1;
+        if s - b >= 0.15 * (far - b) {
+            agree += 1;
+        }
+    }
+    detailed >= MIN_DETAILED_TILES && agree * 4 >= detailed * 3
+}
+
 fn search(prev: &Plane, cur: &Plane, cx: i32, cy: i32, r: i32, step: usize) -> (i32, i32, f32) {
     let mut best = (cx, cy, f32::MAX);
     for sy in cy - r..=cy + r {
@@ -293,11 +365,21 @@ pub fn estimate_shift(prev: &MotionFrame, cur: &MotionFrame) -> (f32, f32, bool)
     let best = shifted_difference(p, c, sx, sy, 2);
     let still = shifted_difference(p, c, 0, 0, 2);
     if at_edge {
-        // Faster than the search can follow; the picture is moving a lot.
-        return (sx as f32, sy as f32, false);
+        // Faster than the search can follow; the picture is moving a lot. The
+        // shift found is a lower bound, returned in analysis pixels like any
+        // other, and marked unreliable. A non-zero shift on an unreliable
+        // sample therefore means "too fast to follow", see `scores`.
+        let k = (1i32 << top) as f32;
+        return (sx as f32 * k, sy as f32 * k, false);
     }
-    if (sx != 0 || sy != 0) && best > still * 0.9 {
-        return (0.0, 0.0, still > 0.5);
+    if (sx != 0 || sy != 0) && best > still * 0.9 && !shift_is_global(p, c, sx, sy) {
+        // Lining the frames up barely helps. Either the camera is still and a
+        // subject moves over a plain background, or the picture is so noisy
+        // (night footage) that noise hides a real shift. Neither is a
+        // measurement of the camera, so the sample is left unmeasured and its
+        // motion is filled in from its neighbours. Calling it "not moving"
+        // instead made noisy pans and handheld shots look shaky.
+        return (0.0, 0.0, false);
     }
     if still < 0.5 && best < 0.5 {
         // Identical frames (a still image or a frozen picture).
@@ -454,5 +536,59 @@ mod tests {
                 assert_eq!(row_difference(&a, &b, step), plain, "len {len} step {step}");
             }
         }
+    }
+
+    /// Gaussian-like noise with standard deviation `sigma`, one value per pixel.
+    fn noisy(px: &[u8], sigma: f32, seed: u32) -> Vec<u8> {
+        let mut s = seed;
+        let mut next = || {
+            s = s.wrapping_mul(1_103_515_245).wrapping_add(12_345);
+            ((s >> 16) & 0x7fff) as f32 / 32767.0
+        };
+        px.iter()
+            .map(|&v| {
+                // The sum of 4 uniforms has standard deviation 0.577.
+                let n = (next() + next() + next() + next() - 2.0) / 0.577 * sigma;
+                (v as f32 + n).round().clamp(0.0, 255.0) as u8
+            })
+            .collect()
+    }
+
+    fn dim(px: &[u8]) -> Vec<u8> {
+        px.iter().map(|&v| (16.0 + (v as f32 - 16.0) * 0.15) as u8).collect()
+    }
+
+    #[test]
+    fn shift_is_recovered_in_dark_noisy_frames() {
+        let (w, h) = (480, 270);
+        let a = noisy(&dim(&pattern(w, h, 0, 0)), 3.0, 1);
+        let b = noisy(&dim(&pattern(w, h, 2, -1)), 3.0, 2);
+        let (dx, dy, ok) = estimate_shift(&motion_frame(&a, w, h), &motion_frame(&b, w, h));
+        assert!(ok, "a real shift in noise must count as measured");
+        assert!((dx - 2.0).abs() < 0.75 && (dy + 1.0).abs() < 0.75, "dx {dx} dy {dy}");
+    }
+
+    #[test]
+    fn a_small_subject_over_a_plain_noisy_scene_is_not_camera_movement() {
+        let (w, h) = (480, 270);
+        let tex = pattern(w, h, 0, 0);
+        let frame = |ox: usize| {
+            let mut f = vec![60u8; w * h];
+            for y in 100..170 {
+                for x in 200..280 {
+                    f[y * w + x + ox] = tex[y * w + x];
+                }
+            }
+            f
+        };
+        let a = noisy(&frame(0), 3.0, 3);
+        let b = noisy(&frame(4), 3.0, 4);
+        let (pa, pb) = (motion_frame(&a, w, h), motion_frame(&b, w, h));
+        assert!(!shift_is_global(&pa.levels[0], &pb.levels[0], 4, 0));
+        // The same shift of the whole picture is camera movement.
+        let c = noisy(&dim(&pattern(w, h, 0, 0)), 3.0, 5);
+        let d = noisy(&dim(&pattern(w, h, 4, 0)), 3.0, 6);
+        let (pc, pd) = (motion_frame(&c, w, h), motion_frame(&d, w, h));
+        assert!(shift_is_global(&pc.levels[0], &pd.levels[0], 4, 0));
     }
 }

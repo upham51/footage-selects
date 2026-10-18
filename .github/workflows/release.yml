@@ -118,6 +118,14 @@ jobs:
             echo "This ffmpeg was built with GPL or non-free parts and must not ship."; exit 1
           fi
           dev-bin/ffmpeg$ext -hide_banner -hwaccels
+          # The fast decoding paths must be in the build, or analysis quietly runs in software.
+          if [ "${{ runner.os }}" = "macOS" ]; then
+            dev-bin/ffmpeg -hide_banner -hwaccels | grep -qw videotoolbox || { echo "This ffmpeg cannot decode with VideoToolbox."; exit 1; }
+            dev-bin/ffmpeg -hide_banner -filters | grep -qw scale_vt || { echo "This ffmpeg has no scale_vt filter, so frames cannot be downsized on the GPU."; exit 1; }
+          fi
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            dev-bin/ffmpeg.exe -hide_banner -hwaccels | grep -qw d3d11va || { echo "This ffmpeg cannot decode with Direct3D 11."; exit 1; }
+          fi
 
       - name: Test the engine with the ffmpeg that ships
         shell: bash

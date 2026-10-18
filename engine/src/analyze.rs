@@ -18,7 +18,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 /// Bump when measurements change meaning, so cached results are redone.
-pub const ANALYSIS_VERSION: u32 = 3;
+pub const ANALYSIS_VERSION: u32 = 4;
 pub const DEFAULT_ANALYSIS_WIDTH: u32 = 480;
 pub const DEFAULT_SAMPLE_RATE: f64 = 4.0;
 
@@ -151,6 +151,9 @@ pub struct ClipAnalysis {
     pub decoder: String,
     /// Seconds of wall time spent.
     pub elapsed: f64,
+    /// True when only the sampled frames were decoded (all-intra footage).
+    #[serde(default)]
+    pub sampled_only: bool,
 }
 
 impl ClipAnalysis {
@@ -164,6 +167,7 @@ impl ClipAnalysis {
             complete: false,
             decoder: String::new(),
             elapsed: 0.0,
+            sampled_only: false,
         }
     }
 }
@@ -332,9 +336,10 @@ pub fn analyze_clip(
     let attempts = decoder_order(info, opts.hardware_decode);
     let mut last_err = AnalyzeError::Decode("No frames came out of the decoder.".into());
     let last = *attempts.last().unwrap();
+    let intra_only = decodes_sampled_frames_only(info);
     for dec in attempts {
         let mut delivered = 0usize;
-        let result = run_decoder(info, opts, dec, cancel, &mut |t: &FrameTable| {
+        let result = run_decoder(info, opts, dec, intra_only, cancel, &mut |t: &FrameTable| {
             delivered += t.len();
             on_progress(Progress::Frames(t))
         });
@@ -364,9 +369,20 @@ pub fn analyze_clip(
     Err(last_err)
 }
 
+/// Whether `info` can be decoded one sampled frame at a time: every frame of
+/// all-intra footage (ProRes, DNxHR, MJPEG, intra H.264) decodes on its own,
+/// so the packets between samples are dropped before decoding. Needs ffmpeg
+/// 7.1 or later; older builds decode every frame as for long-GOP footage.
+pub fn decodes_sampled_frames_only(info: &ClipInfo) -> bool {
+    ffmpeg::input_bsf_supported() && crate::probe::is_intra_only(std::path::Path::new(&info.path))
+}
+
 /// The ffmpeg command that decodes `info` with `decoder` and writes small
-/// gray frames to stdout, one `showinfo` line per frame on stderr.
-pub fn decoder_command(info: &ClipInfo, opts: &AnalyzeOptions, decoder: Decoder) -> std::process::Command {
+/// gray frames to stdout, one `showinfo` line per frame on stderr. With
+/// `intra_only` (see `decodes_sampled_frames_only`), packets between samples
+/// never reach the decoder, so a 120 fps all-intra clip sampled 4 times a
+/// second decodes 4 frames a second, not 120.
+pub fn decoder_command(info: &ClipInfo, opts: &AnalyzeOptions, decoder: Decoder, intra_only: bool) -> std::process::Command {
     let (w, h) = analysis_size(info, opts.width);
     let r = opts.sample_rate;
     let select = format!("select='isnan(prev_selected_t)+gt(floor(t*{r}),floor(prev_selected_t*{r}))'");
@@ -390,6 +406,13 @@ pub fn decoder_command(info: &ClipInfo, opts: &AnalyzeOptions, decoder: Decoder)
         Decoder::Software => {}
     }
     cmd.args(["-skip_frame", "noref"]);
+    if intra_only {
+        // Keep the first packet, packets with no duration, and the first packet
+        // of each sample interval (the same frames `select` keeps).
+        cmd.arg("-bsf:v").arg(format!(
+            "noise=drop='not(eq(n,0)+lte(d,0)+gt(floor(pts*tb*{r}),floor((pts-d)*tb*{r})))'"
+        ));
+    }
     cmd.arg("-i").arg(&info.path);
     cmd.args(["-map", "0:v:0", "-an", "-sn", "-dn", "-vf", &filter]);
     cmd.args(["-fps_mode", "passthrough", "-f", "rawvideo", "-pix_fmt", "gray", "pipe:1"]);
@@ -414,8 +437,9 @@ pub fn gpu_filter(info: &ClipInfo, select: &str, w: u32, h: u32, scale: &str) ->
 /// decoder that produced them. Used to time decoding on its own.
 pub fn decoded_frames(info: &ClipInfo, opts: &AnalyzeOptions) -> Result<(Vec<Vec<u8>>, Decoder), AnalyzeError> {
     let (w, h) = analysis_size(info, opts.width);
+    let intra_only = decodes_sampled_frames_only(info);
     for dec in decoder_order(info, opts.hardware_decode) {
-        let mut child = decoder_command(info, opts, dec)
+        let mut child = decoder_command(info, opts, dec, intra_only)
             .stderr(Stdio::null())
             .spawn()
             .map_err(|e| AnalyzeError::ToolMissing(e.to_string()))?;
@@ -437,12 +461,13 @@ fn run_decoder(
     info: &ClipInfo,
     opts: &AnalyzeOptions,
     decoder: Decoder,
+    intra_only: bool,
     cancel: &AtomicBool,
     on_progress: &mut dyn FnMut(&FrameTable),
 ) -> Result<ClipAnalysis, AnalyzeError> {
     let (w, h) = analysis_size(info, opts.width);
     let r = opts.sample_rate;
-    let mut child = decoder_command(info, opts, decoder)
+    let mut child = decoder_command(info, opts, decoder, intra_only)
         .spawn()
         .map_err(|e| AnalyzeError::ToolMissing(e.to_string()))?;
 
@@ -543,6 +568,7 @@ fn run_decoder(
     // A decoder that exits with an error after producing most of the clip
     // (common with truncated camera files) still gives usable scores.
     analysis.complete = true;
+    analysis.sampled_only = intra_only;
     analysis.decoder = decoder_used(decoder_kind, &info.pix_fmt, filter_input.lock().unwrap().as_deref()).into();
     Ok(analysis)
 }

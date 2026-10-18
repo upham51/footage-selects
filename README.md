@@ -209,7 +209,7 @@ A check sends GitHub a request for one small file that describes the newest vers
 1. If you shoot log, set Picture profile on the right once. Sony and DJI clips name their own profile, so this matters for other cameras.
 2. Clear blue sky, plain walls and other shots with little detail score lower on focus even when sharp. Look at the clip's graph before writing it off.
 3. Intentional camera moves, like a slow pan or a push in, count as stable. Fast whip pans count as a little less stable.
-4. Night and other low-light footage: a low stability score means the camera really moved. Tests with known camera movement show darkness and sensor noise do not change the motion measurement. Dark scenes do score lower on exposure, because the app cannot tell a night scene from an underexposed day scene; lower Exposure at least for a night shoot.
+4. Night and other low-light footage: a low stability score means the camera really moved. In very dark, flat, noisy shots, earlier versions sometimes read small camera moves as no movement at all, which made gentle handheld footage look shakier than it was; this is fixed, and projects scored before the fix are analyzed again when you open them. Dark scenes score lower on exposure, because the app cannot tell a night scene from an underexposed day scene; lower Exposure at least for a night shoot. Sensor noise also reads as fine detail, so night shots can score higher on focus than they deserve. Check focus by eye on night clips.
 5. Footage Selects judges picture quality, not content. It cannot tell a great moment from a dull one, so treat its selects as a first pass.
 
 ## Good to know
