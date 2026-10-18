@@ -78,7 +78,7 @@ impl ToneProfile {
             ToneProfile::AppleLog => "Apple Log",
             ToneProfile::NLog => "Nikon N-Log",
             ToneProfile::Hlg => "HLG",
-            ToneProfile::GenericLog => "Log, curve unknown",
+            ToneProfile::GenericLog => "Log, exact type unknown",
         }
     }
 

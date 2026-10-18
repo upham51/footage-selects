@@ -73,6 +73,8 @@ pub struct RecordTags {
     pub make: Option<String>,
     /// The file came from a phone, whose `creation_time` is true UTC.
     pub phone: bool,
+    /// The container's `major_brand`, such as XAVC for Sony cameras.
+    pub brand: Option<String>,
 }
 
 /// Recording time and place from the container's tags.
@@ -106,6 +108,7 @@ pub fn record_tags(json: &Value) -> RecordTags {
             "com.apple.quicktime.creationdate" => t.apple_creation = Some(v.clone()),
             "com.apple.quicktime.location.iso6709" | "location" | "location-eng" if t.location.is_none() => t.location = Some(v.clone()),
             "com.apple.quicktime.make" | "make" | "com.android.manufacturer" if t.make.is_none() => t.make = Some(v.clone()),
+            "major_brand" if t.brand.is_none() => t.brand = Some(v.clone()),
             _ => {}
         }
         if k.starts_with("com.apple.quicktime.") || k.starts_with("com.android.") {

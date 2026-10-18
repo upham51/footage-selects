@@ -123,6 +123,9 @@ pub struct AsideDto {
     pub sound: usize,
     #[serde(default)]
     pub dropped: usize,
+    /// Selects kept by hand, which every filter leaves alone.
+    #[serde(default)]
+    pub hand_kept: usize,
 }
 
 pub fn aside_counts(selections: &[ClipSelection]) -> AsideDto {
@@ -134,6 +137,7 @@ pub fn aside_counts(selections: &[ClipSelection]) -> AsideDto {
             (SegmentStatus::SetAside, Some(AsideReason::Light)) => a.light += 1,
             (SegmentStatus::SetAside, Some(AsideReason::Sound)) => a.sound += 1,
             (SegmentStatus::SetAside, Some(AsideReason::Dropped)) => a.dropped += 1,
+            (SegmentStatus::Kept, _) if g.manual => a.hand_kept += 1,
             _ => {}
         }
         if g.similar_to.is_some() && matches!(g.status, SegmentStatus::Kept | SegmentStatus::OverLimit | SegmentStatus::SetAside) {
@@ -553,7 +557,7 @@ impl AppState {
                     })
                     .collect()
             },
-            taste: if project.finished_videos.is_empty() {
+            taste: if project.finished_videos.is_empty() && project.clips.iter().all(|c| c.marks.is_empty()) {
                 None
             } else {
                 let report = taste_report(&project);

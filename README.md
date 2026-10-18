@@ -100,7 +100,7 @@ Under Filters:
 1. Camera movement: Any, Still, Moving, Pans or Tilts. With anything but Any, good stretches are cut where the camera starts or stops moving, and stretches that do not match are set aside rather than kept. Set aside stretches show in the clip view with an arrow and the words Set aside. The app reads movement as the picture sliding sideways or up and down, so it can tell a pan left from a pan right and a tilt up from a tilt down. A push-in, pull-out or zoom has little sideways movement and reads as still.
 2. Set aside repeated takes: finds selects that look like a better select in another clip, such as a second take from the same tripod spot, and keeps only the best one. A clip whose select is set aside this way can use its next best stretch instead, within the selects per clip limit. Even with this off, the side panel says how many selects look like another, and the clip view names the clip and moment each one looks like. It only compares different clips, so the parts of one long shot are never called repeats of each other.
 
-3. Light: Any, Golden hour, Blue hour, Daylight or Night. Only footage shot in that light is kept; the rest, and clips whose light is not known, are set aside. See Light, scenes and places below.
+3. Light: Any, Golden hour, Blue hour, Daylight or Night. Only footage shot in that light is kept; the rest, and clips whose light is not known, are set aside. Stretches you kept by hand stay whatever this filter or the sound filter says, and the panel counts them. See Light, scenes and places below.
 4. Set aside selects with sound problems: keeps only selects whose sound is clean. Wind noise, distorted (clipped) sound and dropouts are always listed whether or not this is ticked; tick it when you will use the sound.
 
 Reset to defaults puts every slider back where it started and turns the filters off.
@@ -148,7 +148,9 @@ You have the final say on any stretch. In a clip's view, hold a moment (click a 
 
 Your call covers the stretch under the held moment. Inside a long dropped stretch, it covers a piece as long as Longest select around the held moment. Kept stretches are outlined in navy on the strip above the graphs, dropped ones in red, and the table of stretches has a Your call column. Calls are saved with the project and survive slider changes.
 
-Every call also teaches the app your taste: Fit settings to my edits, under Learn from your edits, uses kept stretches as examples to keep and dropped ones as examples to leave out, with or without finished videos.
+Every call also teaches the app your taste: Fit settings to my edits, under Learn from your edits, uses kept stretches as examples to keep and dropped ones as examples to leave out, with or without finished videos. The button shows once you have kept at least one stretch by hand or added a finished video whose shots were found.
+
+A call on a stretch the settings did not choose still counts. Keep this makes it a select whatever its scores. Drop this on a stretch that is not a select changes nothing you can see now, says so, and keeps that stretch out if new settings would choose it; the table marks it Dropped.
 
 ## Sound
 
@@ -162,7 +164,7 @@ A lane under the clip's graphs shows where someone talks. The list shows a Talki
 
 ## Light, scenes and places
 
-The app works out when and where each clip was recorded, from the camera's own files (Sony's XML, DJI's captions), a phone's tags, or the camera's clock. From the time and place it works out how high the sun was at the middle of the clip:
+The app works out when and where each clip was recorded, from the camera's own files (Sony's XML, DJI's captions), a phone's tags, a Sony file's recording time (which Sony writes in UTC), or the camera's clock. Times are shown, and scenes named, in the local time where you shot. From the time and place it works out how high the sun was at the middle of the clip:
 
 1. Golden hour: the sun from 4 degrees below to 6 degrees above the horizon.
 2. Blue hour: 4 to 8 degrees below.
@@ -174,7 +176,7 @@ Clips are also grouped into scenes, such as "Day 1, evening" or "Day 2, morning,
 Under Places and time, on the right:
 
 1. Where you shot: a latitude and longitude, for example 38.7223, -9.1393, for clips that do not record a place. You can copy them from a map app. Clips without a place first borrow one from a clip recorded within three hours.
-2. Camera clock time zone: many cameras record their clock time without saying which time zone it is in. Work it out uses the time zone other clips in the project state (phones do), or else the place's longitude, which can be an hour out. Choosing it is exact.
+2. Camera clock time zone: many cameras record their clock time without saying which time zone it is in. Guess from the clips uses the time zone other clips in the project state (phones and Sony's XML do). Failing that, it tries both "the clock is on UTC" and "the clock is on local time", working out local time from the place's longitude, and keeps whichever puts bright pictures in daylight and dark ones at night; with no analyzed pictures it assumes local time. A guess from longitude ignores summer time, so it can be an hour out, and a camera whose clock was set to some other zone entirely needs choosing by hand. Choosing it is exact. If light tags or scene names look wrong, this is the first thing to check.
 
 ## Picture checks
 
@@ -205,7 +207,7 @@ How the app knows which profile a clip used, in this order:
 
 Changing a profile updates the selects right away. Nothing is analyzed again.
 
-Two profiles are approximate. DJI has not published the D-Log M curve, so D-Log's curve stands in for it. "Log, curve unknown" uses the averaged curve. Readings in stops for those are close but not exact.
+Two profiles are approximate. DJI has not published the D-Log M curve, so D-Log's curve stands in for it. "Log, exact type unknown" uses the averaged curve. Readings in stops for those are close but not exact.
 
 If the camera recorded a shutter much faster than the frame rate suits (for example 1/2000 at 24 frames per second), the clip is tagged Fast shutter. Movement in such clips looks choppy and cannot be fixed in the edit; an ND filter lets you keep the slower shutter in bright light.
 
@@ -235,7 +237,7 @@ Choose your settings under Export:
 2. Timeline frame rate: starts as the most common frame rate in your footage. Pick another if your project uses a different one.
 3. Drop frame timecode: appears for 29.97 and 59.94. Use it if your project uses drop frame timecode. The app turns it on when most of your 29.97 or 59.94 footage was recorded that way.
 4. Extra time around each select: adds up to 3 seconds of footage before and after each select, for transitions and speed ramps. The marker still sits where the select starts, and two selects from the same clip never overlap.
-5. Layout: either every full clip on track 1 with each select above it on track 2, or only the selects back to back on track 2.
+5. Layout: Whole clips, with each select stacked above its clip (full clips on track 1, selects on track 2), or Selects only, one after another (on track 2).
 6. Also save a still of every select and a contact sheet: see Stills and contact sheet below.
 
 Click Export timeline, choose where to save and a name, and four files are written side by side. The save window starts in the same place as for projects: Documents, or the saved project's folder. The four files are:

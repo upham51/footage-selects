@@ -71,10 +71,41 @@ pub struct ClipScene {
     pub wb_note: Option<String>,
 }
 
+/// What a recorded time says about its time zone.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Clock {
+    /// The file states the zone, which is the local zone where it was shot.
+    Stated(i32),
+    /// The time is true UTC; the local zone is not known. True when it comes
+    /// from a camera, where a zone the person chooses wins, in case the
+    /// camera wrote its clock time instead.
+    Utc(bool),
+    /// The camera's clock time with no zone.
+    Unknown,
+}
+
 struct TimeReading {
-    ts: Timestamp,
-    zone_known: bool,
+    /// The time as written, read as if UTC.
+    wall: f64,
+    clock: Clock,
     source: String,
+}
+
+/// Sony cameras write `creation_time` in true UTC, worked out from the
+/// camera's own time zone setting. Their files carry the XAVC brand, or the
+/// maker's name, and are named C0001.MP4 and so on.
+fn sony_like(c: &ProjectClip) -> bool {
+    let Some(info) = c.info.as_ref() else { return false };
+    let t = &info.tags;
+    if t.brand.as_deref().is_some_and(|b| b.trim().to_ascii_uppercase().starts_with("XAVC")) {
+        return true;
+    }
+    if t.make.as_deref().is_some_and(|m| m.to_ascii_lowercase().contains("sony")) {
+        return true;
+    }
+    let name = info.name.to_ascii_uppercase();
+    let b = name.as_bytes();
+    b.len() == 9 && b[0] == b'C' && b[1..5].iter().all(|d| d.is_ascii_digit()) && name.ends_with(".MP4")
 }
 
 fn time_reading(c: &ProjectClip) -> Option<TimeReading> {
@@ -83,29 +114,31 @@ fn time_reading(c: &ProjectClip) -> Option<TimeReading> {
     let tags = &info.tags;
     let camera_file = cam.map(|n| n.source.clone()).unwrap_or_default();
     if let Some(ts) = cam.and_then(|n| n.recorded.as_deref()).and_then(parse_timestamp) {
-        if ts.offset_minutes.is_some() {
-            return Some(TimeReading { ts, zone_known: true, source: format!("the camera's file {camera_file}") });
+        if let Some(o) = ts.offset_minutes {
+            return Some(TimeReading { wall: ts.wall, clock: Clock::Stated(o), source: format!("the camera's file {camera_file}") });
         }
     }
     if let Some(ts) = tags.apple_creation.as_deref().and_then(parse_timestamp) {
-        if ts.offset_minutes.is_some() {
-            return Some(TimeReading { ts, zone_known: true, source: "the phone's creation date".into() });
+        if let Some(o) = ts.offset_minutes {
+            return Some(TimeReading { wall: ts.wall, clock: Clock::Stated(o), source: "the phone's creation date".into() });
         }
     }
     if tags.phone {
         if let Some(ts) = tags.creation_time.as_deref().and_then(parse_timestamp) {
-            let ts = Timestamp { wall: ts.wall, offset_minutes: Some(ts.offset_minutes.unwrap_or(0)) };
-            return Some(TimeReading { ts, zone_known: true, source: "the phone's recording time".into() });
+            let wall = ts.utc().unwrap_or(ts.wall);
+            return Some(TimeReading { wall, clock: Clock::Utc(false), source: "the phone's recording time".into() });
         }
     }
     if let Some(ts) = cam.and_then(|n| n.recorded.as_deref()).and_then(parse_timestamp) {
-        let ts = Timestamp { wall: ts.wall, offset_minutes: None };
-        return Some(TimeReading { ts, zone_known: false, source: format!("the camera's clock, in {camera_file}") });
+        return Some(TimeReading { wall: ts.wall, clock: Clock::Unknown, source: format!("the camera's clock, in {camera_file}") });
     }
     if let Some(ts) = tags.creation_time.as_deref().and_then(parse_timestamp) {
-        // Most cameras write their own clock time here with a UTC label.
-        let ts = Timestamp { wall: ts.wall, offset_minutes: None };
-        return Some(TimeReading { ts, zone_known: false, source: "the camera's clock".into() });
+        if sony_like(c) {
+            let wall = ts.utc().unwrap_or(ts.wall);
+            return Some(TimeReading { wall, clock: Clock::Utc(true), source: "the camera's recording time, which Sony cameras write in UTC".into() });
+        }
+        // Most other cameras write their own clock time here with a UTC label.
+        return Some(TimeReading { wall: ts.wall, clock: Clock::Unknown, source: "the camera's clock".into() });
     }
     None
 }
@@ -124,8 +157,8 @@ fn own_place(c: &ProjectClip) -> Option<((f64, f64), String)> {
 /// The most common stated time zone among the project's clips.
 fn common_offset(readings: &[Option<TimeReading>]) -> Option<i32> {
     let mut counts: Vec<(i32, usize)> = Vec::new();
-    for r in readings.iter().flatten().filter(|r| r.zone_known && r.source != "the phone's recording time") {
-        let o = r.ts.offset_minutes.unwrap_or(0);
+    for r in readings.iter().flatten() {
+        let Clock::Stated(o) = r.clock else { continue };
         match counts.iter_mut().find(|c| c.0 == o) {
             Some(c) => c.1 += 1,
             None => counts.push((o, 1)),
@@ -135,34 +168,80 @@ fn common_offset(readings: &[Option<TimeReading>]) -> Option<i32> {
     counts.first().map(|c| c.0)
 }
 
+/// How far, in minutes, a zone may sit from the one the longitude suggests
+/// and still be taken as the local zone there (summer time, wide zones).
+const LOCAL_REACH: i32 = 90;
+
+/// The local zone to show times and name scenes in: the stated zone when
+/// there is one, else a clock zone or the project's common zone that fits the
+/// place, else the place's longitude. A camera clock left on UTC away from
+/// Greenwich says nothing about local time.
+fn local_offset(clock: Option<i32>, common: Option<i32>, place: Option<(f64, f64)>) -> Option<i32> {
+    let lon = place.map(|p| offset_from_longitude(p.1));
+    for c in [clock, common].into_iter().flatten() {
+        if lon.is_none_or(|l| (c - l).abs() <= LOCAL_REACH) {
+            return Some(c);
+        }
+    }
+    lon.or(clock).or(common)
+}
+
+/// Brightness at or above which a clip is plainly not shot in the dark, and
+/// at or below which it plainly is, on the analysis scale (video black 0,
+/// white 255). Log footage of daylight sits around 90 to 130, night well
+/// under 30.
+const BRIGHT_LEVEL: f32 = 70.0;
+const DARK_LEVEL: f32 = 30.0;
+
+/// The clip's typical brightness, from its analysed frames.
+fn clip_brightness(c: &ProjectClip) -> Option<f32> {
+    let f = &c.analysis.as_ref()?.frames;
+    if f.mean.len() < 3 {
+        return None;
+    }
+    median(f.mean.clone())
+}
+
+/// How many clips a guessed clock zone puts in the wrong light: bright
+/// pictures with the sun well below the horizon, or dark pictures in full day.
+fn light_mismatches(clips: &[(f64, f64, (f64, f64), f32)], offset: i32) -> usize {
+    clips
+        .iter()
+        .filter(|&&(wall, duration, (lat, lon), bright)| {
+            let e = sun_elevation(lat, lon, wall - offset as f64 * 60.0 + duration / 2.0);
+            (bright >= BRIGHT_LEVEL && e < -6.0) || (bright <= DARK_LEVEL && e > 10.0)
+        })
+        .count()
+}
+
 /// When, where, light and scene for every clip, in project order.
 pub fn resolve(project: &Project) -> Vec<ClipScene> {
     let settings = &project.places;
     let readings: Vec<Option<TimeReading>> = project.clips.iter().map(time_reading).collect();
     let common = common_offset(&readings);
     let own: Vec<Option<((f64, f64), String)>> = project.clips.iter().map(own_place).collect();
+    // The zone of the clock behind each reading, when known or chosen, and
+    // whether it was chosen by the person.
+    let clock_zone = |r: &TimeReading| -> Option<(i32, bool)> {
+        match r.clock {
+            Clock::Stated(o) => Some((o, true)),
+            Clock::Utc(true) => Some((settings.clock_offset_minutes.unwrap_or(0), true)),
+            Clock::Utc(false) => Some((0, true)),
+            Clock::Unknown => settings.clock_offset_minutes.map(|o| (o, true)),
+        }
+    };
     let mut scenes: Vec<ClipScene> = Vec::with_capacity(project.clips.len());
     for (i, c) in project.clips.iter().enumerate() {
         let r = readings[i].as_ref();
         let place = own[i].as_ref().map(|p| p.0);
-        let (offset, estimated) = match r {
-            Some(r) if r.zone_known => (r.ts.offset_minutes, false),
-            Some(_) => match (settings.clock_offset_minutes, common, place) {
-                (Some(o), _, _) => (Some(o), false),
-                (None, Some(o), _) => (Some(o), true),
-                (None, None, Some((_, lon))) => (Some(offset_from_longitude(lon)), true),
-                _ => (None, false),
-            },
-            None => (None, false),
-        };
-        let utc = r.and_then(|r| offset.map(|o| r.ts.wall - o as f64 * 60.0));
+        let utc = r.and_then(|r| clock_zone(r).map(|(o, _)| r.wall - o as f64 * 60.0));
         scenes.push(ClipScene {
             id: c.id,
             utc,
-            wall: r.map(|r| r.ts.wall),
-            offset_minutes: offset,
+            wall: r.map(|r| r.wall),
+            offset_minutes: None,
             time_source: r.map(|r| r.source.clone()),
-            zone_estimated: estimated,
+            zone_estimated: false,
             place,
             place_source: own[i].as_ref().map(|p| p.1.clone()),
             sun: None,
@@ -187,16 +266,56 @@ pub fn resolve(project: &Project) -> Vec<ClipScene> {
             sc.place_source = Some("the place chosen for this project".into());
         }
     }
-    // A clock with no zone and no other clue can take one from a place found since.
-    for (i, sc) in scenes.iter_mut().enumerate() {
-        if sc.utc.is_none() {
-            if let (Some(r), Some((_, lon))) = (readings[i].as_ref(), sc.place) {
-                let o = offset_from_longitude(lon);
-                sc.offset_minutes = Some(o);
-                sc.zone_estimated = true;
-                sc.utc = Some(r.ts.wall - o as f64 * 60.0);
-            }
+    // Clocks with no zone: the zone other clips state, else whichever of
+    // "the clock is on UTC" and "the clock is on the place's local time"
+    // agrees better with how bright the pictures are, else local time.
+    let guessed: Option<i32> = common.or_else(|| {
+        let clips: Vec<(f64, f64, (f64, f64), f32)> = project
+            .clips
+            .iter()
+            .zip(scenes.iter())
+            .zip(readings.iter())
+            .filter_map(|((c, sc), r)| {
+                let r = r.as_ref()?;
+                if r.clock != Clock::Unknown {
+                    return None;
+                }
+                Some((r.wall, c.info.as_ref()?.duration, sc.place?, clip_brightness(c)?))
+            })
+            .collect();
+        let lon = scenes
+            .iter()
+            .zip(readings.iter())
+            .filter(|(_, r)| r.as_ref().is_some_and(|r| r.clock == Clock::Unknown))
+            .find_map(|(sc, _)| sc.place)
+            .map(|p| offset_from_longitude(p.1))?;
+        if lon != 0 && light_mismatches(&clips, 0) < light_mismatches(&clips, lon) {
+            Some(0)
+        } else {
+            None
         }
+    });
+    for (i, sc) in scenes.iter_mut().enumerate() {
+        let Some(r) = readings[i].as_ref() else { continue };
+        let chosen = clock_zone(r);
+        let clock = match chosen {
+            Some((o, _)) => Some(o),
+            None => guessed.or(sc.place.map(|p| offset_from_longitude(p.1))),
+        };
+        if sc.utc.is_none() {
+            sc.utc = clock.map(|o| r.wall - o as f64 * 60.0);
+        }
+        let (local, estimated) = match r.clock {
+            Clock::Stated(o) => (Some(o), false),
+            Clock::Utc(_) => (local_offset(None, common, sc.place), true),
+            Clock::Unknown => {
+                let local = local_offset(clock, common, sc.place);
+                // Exact only when the person chose the clock's zone and it is the local one.
+                (local, !(chosen.is_some() && local == clock))
+            }
+        };
+        sc.offset_minutes = if sc.utc.is_some() { local } else { None };
+        sc.zone_estimated = sc.utc.is_some() && estimated;
     }
     for (c, sc) in project.clips.iter().zip(scenes.iter_mut()) {
         if let (Some(utc), Some((lat, lon))) = (sc.utc, sc.place) {

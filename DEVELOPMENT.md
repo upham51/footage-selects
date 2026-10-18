@@ -49,7 +49,7 @@ Sound is read by a second ffmpeg in a scoped thread inside `analyze_clip` (nativ
 
 Hand calls (`selection::Mark`) are applied in `select_candidates_with` after the camera filter: drops set aside kept segments they mostly cover (`AsideReason::Dropped`); keeps carve their exact range out of whatever was there and insert a kept segment with `manual` set, which `apply_cap`, the repeated-take check and the light and sound filters skip. `taste::hand_moments` turns calls into training moments for `fit`, with dropped stretches kept by a setting counting against it.
 
-`scene::resolve` runs on every snapshot: recording time (Sony XML with zone, Apple creation date, a phone's UTC `creation_time`, else the camera clock with an assumed zone), place (sidecar, ISO 6709 tag, borrowed within three hours, the project's place), the sun's elevation with NOAA's equations (`solar.rs`) and `places::group_clips`. White balance is compared within each scene among clips of the same kind (log or standard).
+`scene::resolve` runs on every snapshot: recording time (Sony XML with zone, Apple creation date, a phone's UTC `creation_time`, a Sony file's `creation_time`, which Sony also writes in UTC and which is recognised by the XAVC brand, the Sony make or a C0000.MP4 name, else the camera clock with an assumed zone), place (sidecar, ISO 6709 tag, borrowed within three hours, the project's place), the sun's elevation with NOAA's equations (`solar.rs`) and `places::group_clips`. A camera clock with no zone takes the person's choice, else the zone other clips state, else UTC or the place's longitude zone, whichever gives fewer clips in the wrong light (median frame brightness of 70 or more with the sun 6 degrees under, or 30 or less with it 10 degrees up; `light_mismatches`), with longitude winning ties. The clock's zone only turns a reading into UTC: `ClipScene::offset_minutes`, which the window shows times in and `group_clips` names scenes in, is the local zone (`local_offset`), so a clock on UTC no longer names afternoon footage "night". Before this, Sony clips without their XML on the US west coast read seven hours out and every afternoon clip was tagged Night. White balance is compared within each scene among clips of the same kind (log or standard).
 
 Reels: `beats::beat_grid` (spectral flux mixed with low-band flux, autocorrelation tempo with a prior near 120 BPM, Ellis' dynamic programming beat tracker, bars from accent energy), `reel::plan` (slots between cut beats, the best selects chosen, placed as shot or best first with penalties for the same clip twice in a row and two still or two moving shots in a row), and `export::build_reel_timeline`, which adds a `Music` track to the timeline model that all four writers support (audio-only file in FCP 7 XML, an audio asset on lane -1 in FCPXML, an audio event in the EDL). Vertical and square reels set `Timeline::fill`, which writes `adjust-conform type="fill"` in FCPXML.
 
@@ -85,7 +85,9 @@ npx tauri dev          # run the app
 npx tauri build        # build an installer for this computer
 ```
 
-Paths given on the command line are added on start, which is handy for testing: `target/debug/footage-selects /path/to/footage`.
+Start the app through `npx tauri dev`, not by opening `target/debug/footage-selects` on its own. A debug binary built by plain `cargo build` loads its window from the small web server that `tauri dev` runs, so opened alone it shows "Could not connect to 127.0.0.1: Connection refused". For a binary that runs on its own, use `npx tauri build --no-bundle` (or `--debug --no-bundle`), which builds the window's files into it.
+
+Paths given on the command line are added on start, which is handy for testing: `npx tauri dev -- -- /path/to/footage`, or `target/release/footage-selects /path/to/footage` after `npx tauri build --no-bundle`.
 
 ## Tests
 
