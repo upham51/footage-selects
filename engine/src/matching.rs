@@ -291,6 +291,9 @@ pub fn match_reference(reference: &ReferencePrint, clips: &[ClipPrints]) -> Matc
     let shots = split_shots(reference);
     let steps: Vec<f64> = clips.iter().map(source_step).collect();
     let mut out: Vec<MatchedShot> = Vec::new();
+    // The clip and line each matched shot came from, for the short-piece pass below.
+    let mut lines: Vec<Option<(usize, Fit)>> = Vec::new();
+    let mut spans: Vec<(usize, usize, f64, f64)> = Vec::new();
     for &(first, last) in &shots {
         // The cut lies halfway between samples.
         let rs = if first == 0 { 0.0 } else { 0.5 * (reference.t[first - 1] + reference.t[first]) as f64 };
@@ -312,6 +315,7 @@ pub fn match_reference(reference: &ReferencePrint, clips: &[ClipPrints]) -> Matc
             }
         }
         ranked.sort_by(|x, y| if better(&x.1, &y.1) { std::cmp::Ordering::Less } else { std::cmp::Ordering::Greater });
+        let mut chosen: Option<(usize, Fit)> = None;
         let source = ranked.first().and_then(|&(ci, f)| {
             let need = ((samples as f64 * 0.5).ceil() as usize).clamp(2, 6).max(if samples >= 3 { 3 } else { 2 });
             let frac = f.support as f64 / samples as f64;
@@ -330,6 +334,7 @@ pub fn match_reference(reference: &ReferencePrint, clips: &[ClipPrints]) -> Matc
                 return None;
             }
             let conf = frac.min(1.0) * (1.0 - f.mean_d / 16.0).clamp(0.0, 1.0) * (1.0 - 0.5 * ambiguity.min(1.0));
+            chosen = Some((ci, f));
             Some(SourceRange {
                 clip_id: clip.clip_id,
                 start: s0,
@@ -340,8 +345,72 @@ pub fn match_reference(reference: &ReferencePrint, clips: &[ClipPrints]) -> Matc
             })
         });
         out.push(MatchedShot { ref_start: rs, ref_end: re, source });
+        lines.push(chosen);
+        spans.push((first, last, rs, re));
     }
+    rescue_short_pieces(reference, clips, &steps, &mut out, &mut lines, &spans);
     MatchReport { shots: merge_continuations(out) }
+}
+
+/// Shots of this many samples or fewer may be the tail or head of a
+/// neighbouring shot, cut off by a picture change just over `CUT_DISTANCE`.
+const SHORT_PIECE: usize = 3;
+
+/// A short piece next to a matched shot whose samples carry on that shot's
+/// source line is part of that shot, not a cut: a moving picture can change
+/// by just over the cut threshold between two samples, and rounding in
+/// different decoders decides which side of it a frame falls. On its own
+/// such a piece has too few samples to be traced reliably, so it is given
+/// the neighbour's line, and `merge_continuations` joins the two. A real cut
+/// to other footage does not fit the neighbour's line and is left alone.
+fn rescue_short_pieces(
+    reference: &ReferencePrint,
+    clips: &[ClipPrints],
+    steps: &[f64],
+    out: &mut [MatchedShot],
+    lines: &mut [Option<(usize, Fit)>],
+    spans: &[(usize, usize, f64, f64)],
+) {
+    let mut points = Vec::new();
+    for k in 0..out.len() {
+        let (first, last, rs, re) = spans[k];
+        let samples = last - first + 1;
+        if samples > SHORT_PIECE {
+            continue;
+        }
+        let neighbours = [k.checked_sub(1), (k + 1 < out.len()).then_some(k + 1)];
+        for j in neighbours.into_iter().flatten() {
+            let Some((ci, f)) = lines[j] else { continue };
+            if (spans[j].3 - rs).abs() > 0.2 && (re - spans[j].2).abs() > 0.2 {
+                continue;
+            }
+            let clip = &clips[ci];
+            points.clear();
+            for ri in first..=last {
+                candidates(reference.hash[ri], clip, ri, reference.t[ri] as f64, &mut points);
+            }
+            let g = evaluate(&points, f.a, f.b, steps[ci]);
+            if g.support * 2 < samples || g.support == 0 || g.mean_d > MATCH_DISTANCE as f64 {
+                continue;
+            }
+            let s0 = (f.a + f.b * rs).max(0.0);
+            let s1 = (f.a + f.b * re).min(clip.duration.max(s0));
+            if s1 - s0 < 0.02 {
+                continue;
+            }
+            let conf = out[j].source.as_ref().map(|s| s.confidence).unwrap_or(0.5);
+            out[k].source = Some(SourceRange {
+                clip_id: clip.clip_id,
+                start: s0,
+                end: s1,
+                speed: f.b,
+                confidence: conf,
+                crop: CROP_NAMES[f.crop].to_string(),
+            });
+            lines[k] = Some((ci, f));
+            break;
+        }
+    }
 }
 
 /// Join neighbouring shots that continue the same source line: a cut detected
@@ -417,6 +486,52 @@ mod tests {
         assert!((s.speed - 0.4).abs() < 0.04, "speed {}", s.speed);
         assert!((s.start - 10.0).abs() < 0.3, "start {}", s.start);
         assert!((s.end - 12.0).abs() < 0.3, "end {}", s.end);
+    }
+
+    #[test]
+    fn a_short_tail_cut_off_a_shot_by_a_picture_change_stays_with_it() {
+        // Source at 4 samples a second for 30 s.
+        let src = walk(11, 120);
+        let t: Vec<f32> = (0..120).map(|i| i as f32 / 4.0).collect();
+        let fp: Vec<[u64; 3]> = src.iter().map(|&h| [h, !h, !h]).collect();
+        let clip = ClipPrints { clip_id: 1, t: &t, fp: &fp, duration: 30.0 };
+        // Finished video at 6 per second: source 5 s to 8 s at normal speed.
+        // The last two samples change by just over the cut threshold, as a
+        // moving picture can, but still match the source within tolerance.
+        let tail_mask: u64 = 0x0000_0000_0000_07FF; // 11 bits
+        let before_mask: u64 = 0x07FF_0000_0000_0000; // 11 other bits
+        let mut hash: Vec<u64> = (0..18).map(|i| src[((5.0 + i as f64 / 6.0) * 4.0).round() as usize]).collect();
+        hash[15] ^= before_mask;
+        hash[16] ^= tail_mask;
+        hash[17] ^= tail_mask;
+        assert!(distance(hash[15], hash[16]) > CUT_DISTANCE, "the test needs a split");
+        // A decoy clip holds the changed tail exactly, so on its own the tail would trace there.
+        let decoy_src: Vec<u64> = (0..40).map(|i| if i == 20 { hash[16] } else if i == 21 { hash[17] } else { walk(77, 40)[i] }).collect();
+        let dt: Vec<f32> = (0..40).map(|i| i as f32 / 4.0).collect();
+        let dfp: Vec<[u64; 3]> = decoy_src.iter().map(|&h| [h, !h, !h]).collect();
+        let decoy = ClipPrints { clip_id: 2, t: &dt, fp: &dfp, duration: 10.0 };
+        let r = match_reference(&reference(hash, 6.0), &[clip, decoy]);
+        let matched: Vec<_> = r.matched().collect();
+        assert_eq!(matched.len(), 1, "{:#?}", r.shots);
+        let s = matched[0];
+        assert_eq!(s.clip_id, 1);
+        assert!((s.start - 5.0).abs() < 0.3, "start {}", s.start);
+        assert!((s.end - 8.0).abs() < 0.3, "end {}", s.end);
+    }
+
+    #[test]
+    fn a_short_cut_to_other_footage_is_not_absorbed() {
+        let src = walk(11, 120);
+        let t: Vec<f32> = (0..120).map(|i| i as f32 / 4.0).collect();
+        let fp: Vec<[u64; 3]> = src.iter().map(|&h| [h, !h, !h]).collect();
+        let clip = ClipPrints { clip_id: 1, t: &t, fp: &fp, duration: 30.0 };
+        // 3 s of the source, then a half-second insert of something else entirely.
+        let mut hash: Vec<u64> = (0..18).map(|i| src[((5.0 + i as f64 / 6.0) * 4.0).round() as usize]).collect();
+        hash.extend(walk(555, 3));
+        let r = match_reference(&reference(hash, 6.0), &[clip]);
+        let last = r.shots.last().unwrap();
+        assert!(last.ref_start > 2.8, "{:#?}", r.shots);
+        assert!(last.source.is_none(), "{:#?}", r.shots);
     }
 
     #[test]
