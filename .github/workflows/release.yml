@@ -141,6 +141,10 @@ jobs:
       - name: Build installer
         shell: bash
         run: |
+          # Pasted keys often carry a stray newline or space, which breaks base64 decoding.
+          TAURI_SIGNING_PRIVATE_KEY="$(printf '%s' "$TAURI_SIGNING_PRIVATE_KEY" | tr -d '[:space:]')"
+          UPDATER_PUBLIC_KEY="$(printf '%s' "$UPDATER_PUBLIC_KEY" | tr -d '[:space:]')"
+          export TAURI_SIGNING_PRIVATE_KEY UPDATER_PUBLIC_KEY
           args=(--target ${{ matrix.target }} --bundles ${{ matrix.bundles }})
           if [ -n "$TAURI_SIGNING_PRIVATE_KEY" ] && [ -n "$UPDATER_PUBLIC_KEY" ]; then
             echo "Update signing is set up: building update files too."
@@ -155,6 +159,10 @@ jobs:
         id: collect
         shell: bash
         run: |
+          # Pasted keys often carry a stray newline or space, which breaks base64 decoding.
+          TAURI_SIGNING_PRIVATE_KEY="$(printf '%s' "$TAURI_SIGNING_PRIVATE_KEY" | tr -d '[:space:]')"
+          UPDATER_PUBLIC_KEY="$(printf '%s' "$UPDATER_PUBLIC_KEY" | tr -d '[:space:]')"
+          export TAURI_SIGNING_PRIVATE_KEY UPDATER_PUBLIC_KEY
           version=$(node -p "require('./src-tauri/tauri.conf.json').version")
           name=$(node -p "require('./src-tauri/tauri.conf.json').productName.replace(/[^A-Za-z0-9]+/g, '-')")
           b=target/${{ matrix.target }}/release/bundle
