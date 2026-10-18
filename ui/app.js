@@ -199,7 +199,7 @@ function stripSvg(c) {
   }
   for (const k of c.kept) {
     const x = (k.start / d) * 1000, w = Math.max(6, ((k.end - k.start) / d) * 1000);
-    s += `<rect x="${x.toFixed(1)}" y="1" width="${w.toFixed(1)}" height="12" rx="3" fill="#2C4A6E"/>`;
+    s += `<rect x="${x.toFixed(1)}" y="1" width="${w.toFixed(1)}" height="12" rx="3" fill="#0F5C4E"/>`;
   }
   for (const [a, b] of c.used || []) {
     const x = (a / d) * 1000, w = Math.max(6, ((b - a) / d) * 1000);
@@ -353,20 +353,28 @@ function graphSvg(key, label, w, d) {
     <line x1="0" x2="${w}" y1="${ty}" y2="${ty}" stroke="#2C4A6E" stroke-opacity=".55" stroke-dasharray="4 4" stroke-width="1"/>
     <text x="${w - 6}" y="${Math.max(11, ty - 4)}" text-anchor="end" font-size="11" fill="#5E6878" font-family="Inter Tight">${pct(thr)}</text>
     <line class="pin" x1="${x(viewer.pin).toFixed(1)}" x2="${x(viewer.pin).toFixed(1)}" y1="0" y2="${H}" stroke="#C9A227" stroke-width="2"/>
-    <line class="cursor" x1="0" x2="0" y1="0" y2="${H}" stroke="#1D3450" stroke-width="1" visibility="hidden"/>
+    <line class="cursor" x1="0" x2="0" y1="0" y2="${H}" stroke="#1D3450" stroke-width="1.5" visibility="hidden"/>
+    <circle class="dot" cx="0" cy="0" r="5" fill="#fff" stroke="#2C4A6E" stroke-width="2.5" visibility="hidden"/>
   </svg>`;
 }
 
 function laneSvg(w, d) {
-  const H = 24, dur = d.duration || 1;
+  const H = 28, dur = d.duration || 1;
   const x = (t) => (t / dur) * w;
-  let s = "";
+  let s = `<rect x="0" y="0" width="${w}" height="${H}" rx="6" fill="#F4F2EC"/>`;
+  let n = 0;
   for (const seg of d.segments) {
     const x0 = x(seg.start), x1 = x(seg.end), bw = Math.max(1, x1 - x0);
-    s += `<rect x="${x0.toFixed(1)}" y="2" width="${bw.toFixed(1)}" height="${H - 4}" rx="4" fill="${SEG_FILL[seg.status]}" stroke="#fff" stroke-width="1"/>`;
-    if (bw >= 18) {
-      const [, shape] = SEG_STATUS[seg.status];
-      s += `<g transform="translate(${(x0 + bw / 2 - 6).toFixed(1)},6) scale(.857)" fill="none" stroke="${SEG_INK[seg.status]}" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">${ICON[shape]}</g>`;
+    const kept = seg.status === "kept";
+    if (kept) n++;
+    s += `<rect x="${x0.toFixed(1)}" y="${kept ? 0 : 3}" width="${bw.toFixed(1)}" height="${kept ? H : H - 6}" rx="5" fill="${kept ? "#0F5C4E" : SEG_FILL[seg.status]}" stroke="#fff" stroke-width="1"/>`;
+    // Every band carries its shape; kept ones also their number when there is room.
+    const [, shape] = SEG_STATUS[seg.status];
+    const ink = kept ? "#FFFFFF" : SEG_INK[seg.status];
+    if (kept && bw >= 76) {
+      s += `<g transform="translate(${(x0 + 8).toFixed(1)},8) scale(.857)" fill="none" stroke="${ink}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${ICON[shape]}</g><text x="${(x0 + 24).toFixed(1)}" y="18.5" font-size="11.5" font-weight="600" fill="#FFFFFF" font-family="Inter Tight">Select ${n}</text>`;
+    } else if (bw >= 18) {
+      s += `<g transform="translate(${(x0 + bw / 2 - 6).toFixed(1)},8) scale(.857)" fill="none" stroke="${ink}" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">${ICON[shape]}</g>`;
     }
   }
   for (const [a, b] of d.used || []) {
@@ -414,7 +422,7 @@ function renderDetail() {
   const cameraHtml = cameraRowHtml(d);
 
   // Draw at the real width of the graph area so text and strokes stay crisp.
-  const w = graphWidth || Math.max(320, panel.clientWidth - 38);
+  const w = graphWidth || Math.max(320, panel.clientWidth - 38 - LANE_LABEL);
 
   let body;
   if (!d.raw.t.length) {
@@ -427,10 +435,9 @@ function renderDetail() {
   } else {
     const keptCount = d.segments.filter((s) => s.status === "kept").length;
     const mean = (key) => pct(d.smoothed[key].reduce((a, b) => a + b, 0) / d.smoothed[key].length);
-    const keys = d.raw.key_stops || [];
-    const keyMean = keys.length ? keys.reduce((a, b) => a + b, 0) / keys.length : null;
-    const extraStats = (key) => key === "exposure" && isLog && keyMean != null ? ` · middle tones <span class="num">${fmtStops(keyMean)}</span> stops` : "";
-    const graph = (key, label) => `<div class="graph"><div class="graph-head"><span class="name">${label}</span><span class="stats">Average <span class="num">${mean(key)}</span>${extraStats(key)} · threshold <span class="num">${pct(d.selection[key + "_min"])}</span></span></div>${graphSvg(key, label, w - 2, d)}</div>`;
+    const graph = (key, label) => `<div class="lane-row"><div class="lane-meta"><span class="lane-name">${label}</span><span class="lane-value num" data-lane-value="${key}">–</span><span class="lane-stats">Average <span class="num">${mean(key)}</span><br>Needs <span class="num">${pct(d.selection[key + "_min"])}</span></span></div><div class="lane-plot graph">${graphSvg(key, label, w - 2, d)}</div></div>`;
+    const frameCells = Array.from({ length: STRIP_FRAMES }, (_, j) => `<canvas width="192" height="108" data-a="${((j / STRIP_FRAMES) * d.duration).toFixed(3)}" data-b="${(((j + 1) / STRIP_FRAMES) * d.duration).toFixed(3)}"></canvas>`).join("");
+    const keptSecs = d.segments.filter((s) => s.status === "kept").reduce((a, s) => a + (s.end - s.start), 0);
     const segRows = d.segments.map((s) => {
       const [t, sh, wd] = SEG_STATUS[s.status];
       const usedIn = (d.used || []).filter(([a, b, n]) => Math.min(b, s.end) - Math.max(a, s.start) > 0.25).map(([, , n]) => n);
@@ -440,14 +447,23 @@ function renderDetail() {
         <td class="nowrap">${esc(CAMERA_WORDS[s.camera] || "Still")}</td><td class="num tabular">${pct(s.focus)}</td><td class="num tabular">${pct(s.exposure)}</td>${isLog ? `<td class="num tabular">${fmtStops(s.key_stops)}</td>` : ""}<td class="num tabular">${pct(s.stability)}</td><td class="num tabular">${pct(s.score)}</td></tr>`;
     }).join("");
     const usedLegend = (d.used || []).length ? `<span class="legend-used"><svg class="icon" viewBox="0 0 14 14" aria-hidden="true"><rect x="1.5" y="3" width="11" height="8" rx="2" stroke="#9A5B00" stroke-dasharray="2.5 1.8"/></svg>Used in your edits</span>` : "";
-    body = `${viewerHtml(d)}<div class="legend"><span class="label">Stretches</span>${Object.values(SEG_STATUS).map(([t, s, wd]) => pill(t, s, wd)).join("")}${d.measured_until < d.duration - 0.01 ? pill("grey", "clock", "Not measured yet") : ""}${usedLegend}</div>
-      <div class="graphs">
-        <div class="graph">${laneSvg(w, d)}</div>
-        ${graph("focus", "Focus")}${graph("exposure", "Exposure")}${graph("stability", "Stability")}
-        <div class="graph-axis">${axisSvg(w, d.duration || 1)}</div>
+    body = `${viewerHtml(d)}
+      <div class="inst-bar">
+        <span class="inst-held" id="inst-held">Held at</span><span class="inst-tc num" id="inst-tc"></span>
+        <span id="inst-pill"></span>
+        <span class="inst-why" id="inst-why"></span>
+        <span class="inst-kept num">${keptCount ? `${fmtDur(keptSecs)} kept` : "Nothing kept"}</span>
       </div>
-      <div class="readout" id="readout">Move the pointer over a graph to read the scores and see the picture at that moment; click to hold it. Navy is the smoothed score used for selection, grey the raw per-frame score, the dashed line the threshold.</div>
-      <div class="seg-table"><h3 class="eyebrow" style="padding-left:18px">Every stretch of this clip</h3>
+      <div class="legend"><span class="label">Stretches</span>${Object.values(SEG_STATUS).map(([t, s, wd]) => pill(t, s, wd)).join("")}${d.measured_until < d.duration - 0.01 ? pill("grey", "clock", "Not measured yet") : ""}${usedLegend}</div>
+      <div class="graphs">
+        <div class="lane-row lane-row-frames"><div class="lane-meta"><span class="lane-name">Frames</span></div><div class="lane-plot"><div class="frame-strip" id="frame-strip">${frameCells}</div></div></div>
+        <div class="lane-row lane-row-sel"><div class="lane-meta"><span class="lane-name">Selects</span></div><div class="lane-plot">${laneSvg(w, d)}</div></div>
+        ${graph("focus", "Focus")}${graph("exposure", "Exposure")}${graph("stability", "Stability")}
+        <div class="lane-row"><div></div><div class="lane-plot graph-axis">${axisSvg(w, d.duration || 1)}</div></div>
+      </div>
+      <div class="readout" id="readout">Move the pointer over the graphs to read the scores and see the picture at that moment; click to hold it. Navy is the smoothed score used for selection, grey the raw per-frame score, the dashed line the threshold.</div>
+      ${isLog ? stopsCard(d) : ""}
+      <div class="seg-table"><h3 class="eyebrow">Every stretch of this clip</h3>
         <table><thead><tr><th>Time</th><th class="num">Length</th><th>Result</th><th>Why</th><th>Camera</th><th class="num">Focus</th><th class="num">Exposure</th>${isLog ? '<th class="num" title="Middle tones in stops from middle grey">Stops</th>' : ""}<th class="num">Stability</th><th class="num">Overall</th></tr></thead><tbody>${segRows}</tbody></table></div>`;
   }
 
@@ -460,13 +476,134 @@ function renderDetail() {
     </div>${body}</div>`;
   const cp = $("clip-profile");
   if (cp) cp.value = cp.dataset.value;
-  const holder = panel.querySelector(".graphs .graph");
+  const holder = panel.querySelector(".graphs .lane-plot");
   if (holder) {
     const real = Math.floor(holder.clientWidth);
     if (real > 0 && Math.abs(real - w) > 1) { graphWidth = real; renderDetail(); return; }
   }
   attachHover(w, d);
   paintViewer();
+  paintPoint(viewer.pin, false);
+  loadStrip();
+}
+
+/* ---------- the instrument: readout bar, live values, dots and frame strip ---------- */
+
+const LANE_LABEL = 116; // width of the label column beside the graphs, including the gap
+const STRIP_FRAMES = 12;
+
+function nearestIndex(ts, t) {
+  let lo = 0, hi = ts.length - 1;
+  while (lo < hi) { const m = (lo + hi) >> 1; if (ts[m] < t) lo = m + 1; else hi = m; }
+  if (lo > 0 && Math.abs(ts[lo - 1] - t) < Math.abs(ts[lo] - t)) lo--;
+  return lo;
+}
+
+/** Shows the scores and result at moment t: the bar above the graphs, each lane's value and dot, and the frame under it. */
+function paintPoint(t, live) {
+  const d = detail, tc = $("inst-tc");
+  if (!d || !tc || !d.smoothed.t.length) return;
+  const dur = d.duration || 1, i = nearestIndex(d.smoothed.t, t);
+  const kept = d.segments.filter((s) => s.status === "kept");
+  const seg = d.segments.find((s) => t >= s.start && t < s.end);
+  $("inst-held").textContent = live ? "At" : "Held at";
+  tc.textContent = fmtClock(t);
+  if (seg) {
+    const [tone, shape, word] = SEG_STATUS[seg.status];
+    $("inst-pill").innerHTML = pill(tone, shape, seg.status === "kept" ? `Kept · Select ${kept.indexOf(seg) + 1}` : word);
+    $("inst-why").textContent = whyText(seg, d.selection, kept.length) + repeatNote(seg);
+  } else {
+    $("inst-pill").innerHTML = pill("grey", "clock", "Not measured yet");
+    $("inst-why").textContent = "This part of the clip has not been scored yet.";
+  }
+  for (const key of ["focus", "exposure", "stability"]) {
+    const v = d.smoothed[key][i], low = v < d.selection[key + "_min"];
+    const out = document.querySelector(`[data-lane-value="${key}"]`);
+    if (out) { out.textContent = String(pct(v)); out.classList.toggle("low", low); }
+    const svg = document.querySelector(`svg[data-graph="${key}"]`);
+    const dot = svg?.querySelector(".dot");
+    if (dot) {
+      const sw = svg.viewBox.baseVal.width;
+      dot.setAttribute("cx", ((t / dur) * sw).toFixed(1));
+      dot.setAttribute("cy", (6 + (1 - Math.max(0, Math.min(1, v))) * 80).toFixed(1));
+      dot.setAttribute("stroke", low ? "#B3261E" : "#2C4A6E");
+      dot.setAttribute("visibility", "visible");
+    }
+  }
+  for (const cv of document.querySelectorAll("#frame-strip canvas")) cv.classList.toggle("cur", t >= +cv.dataset.a && t < +cv.dataset.b);
+}
+
+// Small frames across each clip, read once per clip and kept for the last few clips opened.
+const stripCache = new Map();
+function thumbOf(f) {
+  const src = document.createElement("canvas");
+  src.width = f.w; src.height = f.h;
+  src.getContext("2d").putImageData(new ImageData(new Uint8ClampedArray(f.rgba), f.w, f.h), 0, 0);
+  const c = document.createElement("canvas");
+  c.width = 192; c.height = 108;
+  const r = Math.max(192 / f.w, 108 / f.h), w = f.w * r, h = f.h * r;
+  c.getContext("2d").drawImage(src, (192 - w) / 2, (108 - h) / 2, w, h);
+  return c;
+}
+function paintStrip() {
+  const entry = stripCache.get(view.clipId), box = $("frame-strip");
+  if (!box || !entry) return;
+  // A clip whose frames cannot be read shows no strip rather than a row of blanks.
+  box.closest(".lane-row").hidden = entry.failed && !entry.frames.some(Boolean);
+  box.querySelectorAll("canvas").forEach((cv, j) => { if (entry.frames[j]) cv.getContext("2d").drawImage(entry.frames[j], 0, 0, cv.width, cv.height); });
+}
+async function loadStrip() {
+  const d = detail, id = view.clipId;
+  if (!d || !d.raw.t.length || !$("frame-strip")) return;
+  let entry = stripCache.get(id);
+  if (!entry || entry.duration !== d.duration) {
+    entry = { frames: new Array(STRIP_FRAMES).fill(null), failed: false, busy: false, duration: d.duration };
+    stripCache.set(id, entry);
+    if (stripCache.size > 6) stripCache.delete(stripCache.keys().next().value);
+  }
+  paintStrip();
+  if (entry.busy || entry.failed) return;
+  entry.busy = true;
+  try {
+    for (let j = 0; j < STRIP_FRAMES; j++) {
+      if (entry.frames[j]) continue;
+      if (view.mode !== "detail" || view.clipId !== id) return;
+      try { entry.frames[j] = thumbOf(parseStill(await invoke("clip_frame", { id, t: ((j + 0.5) / STRIP_FRAMES) * d.duration }))); }
+      catch (_) { entry.failed = true; break; }
+      if (view.clipId === id) paintStrip();
+    }
+  } finally {
+    entry.busy = false;
+  }
+  if (view.clipId === id) paintStrip();
+}
+
+/** How the clip's middle tones sit in stops over its length, for log footage. */
+function stopsCard(d) {
+  const ks = (d.raw.key_stops || []).filter((v) => v != null && isFinite(v));
+  if (!ks.length) return "";
+  const LO = -7, HI = 5.5, STEP = 0.5, n = Math.round((HI - LO) / STEP);
+  const bins = new Array(n).fill(0);
+  for (const v of ks) bins[Math.max(0, Math.min(n - 1, Math.floor((v - LO) / STEP)))]++;
+  const mx = Math.max(...bins) || 1, W = 1000, H = 120, bw = W / n;
+  const at = (v) => ((v - LO) / (HI - LO)) * W;
+  const cl = d.raw.clipped || [];
+  const clipped = cl.length ? cl.reduce((a, b) => a + b, 0) / cl.length : 0;
+  const mean = ks.reduce((a, b) => a + b, 0) / ks.length;
+  let bars = "";
+  bins.forEach((c, k) => {
+    if (!c) return;
+    const h = Math.max(2, (c / mx) * (H - 6)), lo = LO + k * STEP;
+    bars += `<rect x="${(k * bw + 1).toFixed(1)}" y="${(H - h).toFixed(1)}" width="${(bw - 2).toFixed(1)}" height="${h.toFixed(1)}" rx="2" fill="${lo >= 4.5 || lo < -5 ? "#B3261E" : "#2C4A6E"}"/>`;
+  });
+  const zones = `<rect x="0" y="0" width="${at(-5)}" height="${H}" fill="#FCEDEC"/><rect x="${at(-5)}" y="0" width="${at(-1.5) - at(-5)}" height="${H}" fill="#FDF2E2"/><rect x="${at(4.5)}" y="0" width="${W - at(4.5)}" height="${H}" fill="#FCEDEC"/><line x1="${at(0)}" x2="${at(0)}" y1="0" y2="${H}" stroke="#C9A227" stroke-width="2"/>`;
+  const ticks = [-6, -4, -2, 0, 2, 4].map((v) => `<span class="${v === 0 ? "zero" : ""}" style="left:${((at(v) / W) * 100).toFixed(2)}%">${v > 0 ? "+" + v : v < 0 ? "−" + -v : "0"}</span>`).join("");
+  return `<div class="stops-card">
+    <div class="stops-head"><h3 class="eyebrow eyebrow-dark">Middle tones in stops</h3><span class="stops-note num">Average ${fmtStops(mean)} stops${clipped > 0.0005 ? ` · ${sharePct(clipped)} clipped` : ""}</span></div>
+    <svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" class="stops-svg" role="img" aria-label="How often the middle tones sit at each level, in stops from middle grey">${zones}${bars}</svg>
+    <div class="stops-axis num">${ticks}</div>
+    <p class="hint">Each bar counts the scored moments whose middle tones sit at that level. Gold is middle grey; red is more than 5 stops under, or near the clip point.</p>
+  </div>`;
 }
 
 function profileRowHtml(d) {
@@ -522,6 +659,7 @@ function attachHover(w, d) {
     const ks = d.raw.key_stops || [], cl = d.raw.clipped || [];
     const logBits = ks.length ? ` · Middle tones <span class="num">${fmtStops(ks[i])}</span> stops${cl[i] > 0.005 ? ` · <span class="num">${(cl[i] * 100).toFixed(cl[i] < 0.1 ? 1 : 0)}%</span> clipped` : ""}` : "";
     if (viewer.mode !== "off") showFrameAt(t);
+    paintPoint(t, true);
     readout.innerHTML = `At <span class="num">${fmtClock(t)}</span> · Focus <span class="num">${pct(d.smoothed.focus[i])}</span> · Exposure <span class="num">${pct(d.smoothed.exposure[i])}</span>${logBits} · Stability <span class="num">${pct(d.smoothed.stability[i])}</span> · ${esc(word)}`;
   });
   const timeAt = (e) => {
@@ -532,6 +670,7 @@ function attachHover(w, d) {
   box.addEventListener("mouseleave", () => {
     for (const s of svgs) s.querySelector(".cursor").setAttribute("visibility", "hidden");
     showFrameAt(viewer.pin);
+    paintPoint(viewer.pin, false);
   });
 }
 
@@ -637,6 +776,7 @@ function pinAt(t) {
     tr.classList.toggle("pinned", viewer.pin >= a && viewer.pin < b);
   }
   showFrameAt(viewer.pin);
+  paintPoint(viewer.pin, false);
 }
 
 function stepSelect(dir) {
