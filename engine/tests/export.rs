@@ -777,10 +777,95 @@ fn a_reel_fills_every_slot_on_the_beat_with_the_song_under_it() {
     }
     let xml = fcp7::write(&tl);
     assert!(xml.contains("file-music") && xml.contains("song.mp3"));
+    // Premiere Pro and Resolve: each video clip is scaled to fill the
+    // vertical frame, 1080 / 1920 * 1920 / 1080 = 177.778%, centred.
+    let doc = parse(&xml).unwrap();
+    let video: Vec<_> = doc.descendants().filter(|n| n.has_tag_name("clipitem") && n.attribute("id").is_some_and(|i| i.starts_with("clipitem-v2-"))).collect();
+    assert_eq!(video.len(), 8);
+    for c in &video {
+        let effect = c.descendants().find(|n| n.has_tag_name("effect")).expect("Basic Motion filter");
+        assert_eq!(text(effect, "effectid"), "basic");
+        let param = |id: &str| effect.children().find(|n| n.has_tag_name("parameter") && text(*n, "parameterid") == id).unwrap();
+        assert_eq!(text(param("scale"), "value"), "177.778");
+        let centre = param("center").children().find(|n| n.has_tag_name("value")).unwrap();
+        assert_eq!((text(centre, "horiz"), text(centre, "vert")), ("0", "0"));
+    }
+    assert!(!doc.descendants().any(|n| n.has_tag_name("clipitem") && n.attribute("id").is_some_and(|i| i.starts_with("clipitem-music")) && n.descendants().any(|d| d.has_tag_name("filter"))));
     let fx = fcpxml::write(&tl);
     assert!(fx.contains("audioRole=\"music\"") && fx.contains("adjust-conform"));
     check_fcpxml(&tl, &fx);
     assert!(edl::write(&tl).contains("MUSIC"));
+}
+
+#[test]
+fn reel_fill_scale_follows_each_clips_display_shape() {
+    use selects_engine::reel::{plan, Pace, ReelOrder, ReelSettings, ReelShape};
+    let (mut p, sels) = reel_project();
+    // A phone clip shot upright: stored 1920 by 1080, turned 90 degrees, so
+    // ClipInfo holds its display size of 1080 by 1920.
+    let phone = p.clips[0].id;
+    {
+        let info = p.clip_mut(phone).unwrap().info.as_mut().unwrap();
+        info.rotation = 90;
+        info.width = 1080;
+        info.height = 1920;
+    }
+    let music = selects_engine::beats::MusicInfo { path: "/m.wav".into(), name: "m.wav".into(), duration: 60.0, sample_rate: 48000, channels: 2, codec: "pcm".into() };
+    let scenes = selects_engine::scene::resolve(&p);
+    for shape in [ReelShape::Vertical, ReelShape::Square, ReelShape::Landscape] {
+        let settings = ReelSettings { music: Some(music.clone()), grid: Some(grid(120.0, 60.0)), pace: Pace::EveryBar, length: Some(24.0), order: ReelOrder::BestFirst, shape };
+        let r = plan(&p, &sels, &scenes, &settings).unwrap();
+        assert!(r.shots.iter().any(|s| s.clip_id == phone));
+        let tl = selects_engine::export::build_reel_timeline(&p, &r, &music, shape, "Reel");
+        let xml = fcp7::write(&tl);
+        if shape == ReelShape::Landscape {
+            assert!(!tl.fill && !xml.contains("Basic Motion"));
+            continue;
+        }
+        assert!(tl.fill);
+        let doc = parse(&xml).unwrap();
+        for c in doc.descendants().filter(|n| n.has_tag_name("clipitem") && n.attribute("id").is_some_and(|i| i.starts_with("clipitem-v2-"))) {
+            let is_phone = text(c, "name").starts_with("C0000.MP4");
+            let scale = c.descendants().find(|n| n.has_tag_name("parameter") && text(*n, "parameterid") == "scale").map(|n| text(n, "value")).unwrap();
+            // Vertical 1080 by 1920; square 1080 by 1080.
+            let want = match (shape, is_phone) {
+                (ReelShape::Vertical, false) => "177.778",
+                (ReelShape::Vertical, true) => "100",
+                (_, _) => "100",
+            };
+            assert_eq!(scale, want, "{shape:?}, phone clip {is_phone}");
+        }
+    }
+}
+
+#[test]
+fn a_reel_has_no_sliver_of_a_shot_at_either_end() {
+    use selects_engine::reel::{plan, Pace, ReelOrder, ReelSettings};
+    let (p, sels) = reel_project();
+    let music = selects_engine::beats::MusicInfo { path: "/m.wav".into(), name: "m.wav".into(), duration: 60.0, sample_rate: 48000, channels: 2, codec: "pcm".into() };
+    let scenes = selects_engine::scene::resolve(&p);
+    // The tester's case: 143.6 BPM with the first bar 0.1 s in, a cut every
+    // beat, 30 s. Also every bar, and a first bar a little later.
+    for (offset, pace) in [(0.1, Pace::EveryBeat), (0.1, Pace::EveryBar), (0.3, Pace::EveryTwoBeats), (0.25, Pace::EveryBeat)] {
+        let mut g = grid(143.6, 60.0);
+        for b in g.beats.iter_mut() {
+            *b += offset;
+        }
+        let beat = 60.0 / 143.6;
+        let settings = ReelSettings { music: Some(music.clone()), grid: Some(g.clone()), pace, length: Some(30.0), order: ReelOrder::BestFirst, ..Default::default() };
+        let r = plan(&p, &sels, &scenes, &settings).unwrap();
+        let shortest = r.shots.iter().map(|s| s.length).fold(f64::MAX, f64::min);
+        assert!(shortest >= 0.5 * beat, "{pace:?} at {offset}: a shot of {shortest:.3} s");
+        assert_eq!(r.shots[0].at, 0.0);
+        assert!(r.length <= 30.0 + 1e-9);
+        // Every cut after the start is on a beat of the song.
+        for s in &r.shots[1..] {
+            assert!(g.beats.iter().any(|b| (b - s.at).abs() < 1e-9), "{pace:?}: cut at {} is off the beat", s.at);
+        }
+        for w in r.shots.windows(2) {
+            assert!((w[0].at + w[0].length - w[1].at).abs() < 1e-9);
+        }
+    }
 }
 
 #[test]
