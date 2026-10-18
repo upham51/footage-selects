@@ -11,6 +11,7 @@ pub mod analyze;
 pub mod export;
 pub mod ffmpeg;
 pub mod fingerprint;
+pub mod frame;
 pub mod matching;
 pub mod metrics;
 pub mod probe;

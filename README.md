@@ -72,29 +72,55 @@ Clips that cannot be read are listed with the reason, and left out of the select
 
 The sliders on the right change the selects immediately. Footage is never analyzed again when you move them.
 
+Start from a preset to set every slider at once, then adjust from there:
+
+1. Balanced: the starting settings, suited to most footage.
+2. Long takes: interviews, talks and locked-off shots. Selects of 5 to 30 seconds, with focus and steadiness deciding which win. Sound is not checked, so a select can start mid-sentence.
+3. Short clips: reels and social edits. Clean selects of 1.5 to 5 seconds, up to five from each clip.
+4. Handheld and action: run-and-gun, sport and walking shots. More shake is allowed, and sharpness decides which selects win.
+5. Only the cleanest: the single best moment of each clip, and only if it is clearly good.
+
+The preset you are on is highlighted. Once you move a slider away from it, the app says you are on your own settings.
+
 1. Focus at least, Exposure at least, Stability at least: the lowest score, from 0 to 100, a moment needs to be kept. Raise a slider to be pickier, lower it to keep more.
 2. Smoothing: evens out the scores over this many seconds, so a single soft or shaky frame does not split a good take in two. Off uses the raw scores.
 3. Shortest select: good stretches shorter than this are dropped.
 4. Longest select: good stretches longer than this are split into equal parts.
 5. Selects per clip: the most selects kept from one clip. The best scoring ones win. Slide all the way right for no limit.
 6. Keep camera moves whole: when a good stretch is longer than the longest select, it is always cut where the camera is still, never in the middle of a move if that can be avoided. With this ticked, a single pan, push or drone reveal can run up to twice the longest select instead of being cut in two. It is on to start with.
+7. Which selects win: when a clip has more good stretches than it keeps, Focus counts, Exposure counts and Stability counts decide which stay. At 100 each, the three scores count equally. Turn Stability counts down and the sharpest stretches win even if they are a little shaky. These never change the thresholds, only the order.
 
-Reset to defaults puts every slider back where it started.
+Under Filters:
+
+1. Camera movement: Any, Still, Moving, Pans or Tilts. With anything but Any, good stretches are cut where the camera starts or stops moving, and stretches that do not match are set aside rather than kept. Set aside stretches show in the clip view with an arrow and the words Set aside. The app reads movement as the picture sliding sideways or up and down, so it can tell a pan left from a pan right and a tilt up from a tilt down. A push-in, pull-out or zoom has little sideways movement and reads as still.
+2. Set aside repeated takes: finds selects that look like a better select in another clip, such as a second take from the same tripod spot, and keeps only the best one. A clip whose select is set aside this way can use its next best stretch instead, within the selects per clip limit. Even with this off, the side panel says how many selects look like another, and the clip view names the clip and moment each one looks like. It only compares different clips, so the parts of one long shot are never called repeats of each other.
+
+Reset to defaults puts every slider back where it started and turns both filters off.
 
 Frames scored per second, under Analysis, is the one setting that means analyzing everything again. More frames per second catches shorter moments but takes longer. The app asks before it starts.
 
 ## See why a clip was kept or dropped
 
-When an analyzed clip has no selects, its row in the list already says why, with a triangle and the words Below threshold, for example "Stability averaged 17, needs 50". It names the score that missed its threshold by the most. If every average is high enough but the scores take turns dipping, it says how much of the clip one score spent under its threshold. If good stretches exist but are all short, a dash and the words Too short say how long the longest one was.
+When an analyzed clip has no selects, its row in the list already says why, with a triangle and the words Below threshold, for example "Stability averaged 17, needs 50". It names the score that missed its threshold by the most. If every average is high enough but the scores take turns dipping, it says how much of the clip one score spent under its threshold. If good stretches exist but are all short, a dash and the words Too short say how long the longest one was. If good stretches exist but the filters set them all aside, an arrow and the words Set aside say how many and why.
 
-Click any clip in the list. You will see three graphs, one each for focus, exposure and stability, across the length of the clip.
+Click any clip in the list. At the top is the frame viewer, and below it three graphs, one each for focus, exposure and stability, across the length of the clip.
+
+The frame viewer shows the clip itself:
+
+1. Move the pointer over the graphs and the viewer shows the picture at that moment. Click a graph, or a row in the table of stretches, to hold that moment; a gold line on the graphs marks it. Move the pointer away and the held moment comes back.
+2. Previous select and Next select jump between the kept selects. On the keyboard, the left and right arrows move the held moment by a second (with Shift, five seconds), and the [ and ] keys jump between selects.
+3. Picture shows the frame as recorded. Log footage looks flat here, because it has not been graded.
+4. False color paints the picture by brightness, in stops from middle grey, read through the clip's picture profile the same way the exposure score reads it. Red is clipped, orange is 2.5 stops or more over, pale yellow 1 to 2.5 over, green is middle grey, blue 2.5 to 5 under and purple more than 5 under. Everything else stays grey, so the bands stand out.
+5. Focus peaking turns the picture grey and marks the sharpest edges in yellow. A frame with few or no marks is soft.
+6. Clipping stripes the parts of the frame that are clipped, with no detail left to recover, and shades in blue the parts crushed to black (for log footage, more than 5 stops under, where it is mostly noise). It says what share of the frame is affected.
+7. The viewer reads each frame from the file when you ask for it, so the footage has to be where it was. Frames are never saved, and nothing leaves the computer.
 
 1. The navy line is the smoothed score used for selection. The grey line behind it is the raw score of each frame.
 2. The dashed line is your threshold.
 3. Green stretches were kept. A red stretch on a graph was dropped because that score was under its threshold. Grey stretches were good but too short. Amber stretches were good, but the clip already had its maximum number of better selects.
-4. Every result also has a shape and a word: a tick for kept, a triangle for below threshold, a dash for too short, and three lines for over the per-clip limit.
+4. Every result also has a shape and a word: a tick for kept, a triangle for below threshold, a dash for too short, three lines for over the per-clip limit, and an arrow for set aside by a filter.
 5. Move the pointer over the graphs to read the exact scores at any moment.
-6. Below the graphs, a table lists every stretch of the clip with the reason it was kept or dropped. When exposure is the reason, it says what was wrong: highlights clipped, underexposed, overexposed, large areas lost in the shadows, or very flat light.
+6. Below the graphs, a table lists every stretch of the clip with the reason it was kept or dropped, and its camera movement: still, pan left, pan right, tilt up, tilt down, or moving for anything else. When exposure is the reason, it says what was wrong: highlights clipped, underexposed, overexposed, large areas lost in the shadows, or very flat light. When a stretch looks like a better select in another clip, it says which clip and when.
 7. For log footage, the exposure graph's heading and the readout under the pointer give the middle tones in stops above or below middle grey, and how much of the picture is clipped. The table has a Stops column.
 8. Above the graphs you see which picture profile the clip was judged with and why, with a menu to choose another for this clip. Camera details read from the camera's own files (camera, lens, ISO, shutter, aperture, height and position for drones) are listed too.
 9. Shots you used in a finished video are outlined with a dashed line on the strip above the graphs, and the table says which video used them.
@@ -188,7 +214,7 @@ If clips show as offline, right-click them, choose Link Media, and point Premier
 
 ## Reading the markers
 
-Each select has a marker named Select 1, Select 2 and so on, followed by how strong it is: strong (overall score 80 or more), good (65 to 79) or fair (under 65). The marker's note lists the select's focus, exposure and stability scores. For log footage it adds the profile and where the middle tones sit, for example "Sony S-Log3, middle tones -0.4 stops", and it says "Camera move" when the camera moves through most of the select. The strength word is always in the name, so you never have to rely on color.
+Each select has a marker named Select 1, Select 2 and so on, followed by how strong it is: strong (overall score 80 or more), good (65 to 79) or fair (under 65). The marker's note lists the select's focus, exposure and stability scores. For log footage it adds the profile and where the middle tones sit, for example "Sony S-Log3, middle tones -0.4 stops", and it names the camera movement when the camera moves through most of the select: "Pan left", "Pan right", "Tilt up", "Tilt down", or "Camera move" for anything else. Search the markers for "Pan" to find every pan. The strength word is always in the name, so you never have to rely on color.
 
 The exported files also color the selects by strength: green for strong, blue for good, yellow for fair. How much of that color your editor shows depends on the editor. Final Cut Pro has no yellow markers, so there strong selects get a green completed to-do marker, good selects a blue marker, and fair selects a red to-do marker. In Premiere Pro the selects' clip labels are colored too.
 

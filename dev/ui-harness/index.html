@@ -40,6 +40,9 @@
           <button class="link" id="btn-reset">Reset to defaults</button>
         </div>
         <p class="hint">Sliders change the selects right away. Footage is not analyzed again.</p>
+        <div class="field-label">Start from</div>
+        <div class="chips" id="presets" role="group" aria-label="Start from a preset"></div>
+        <p class="hint" id="preset-hint"></p>
         <div class="slider" data-key="focus_min" data-kind="score">
           <label for="s-focus">Focus at least</label><output id="o-focus"></output>
           <input type="range" id="s-focus" min="0" max="100" step="1">
@@ -72,6 +75,37 @@
           <input type="checkbox" id="keep-moves"> <span>Keep camera moves whole</span>
         </label>
         <p class="hint">Long selects are always cut where the camera is still. With this on, one pan or push can run up to twice the longest select instead of being cut in the middle.</p>
+        <div class="field-label sub-head">Which selects win</div>
+        <p class="hint">When a clip has more good stretches than it keeps, these decide which stay. Thresholds are not affected.</p>
+        <div class="slider" data-key="focus_weight" data-kind="weight">
+          <label for="s-wfocus">Focus counts</label><output id="o-wfocus"></output>
+          <input type="range" id="s-wfocus" min="0" max="100" step="5">
+        </div>
+        <div class="slider" data-key="exposure_weight" data-kind="weight">
+          <label for="s-wexposure">Exposure counts</label><output id="o-wexposure"></output>
+          <input type="range" id="s-wexposure" min="0" max="100" step="5">
+        </div>
+        <div class="slider" data-key="stability_weight" data-kind="weight">
+          <label for="s-wstability">Stability counts</label><output id="o-wstability"></output>
+          <input type="range" id="s-wstability" min="0" max="100" step="5">
+        </div>
+      </div>
+
+      <div class="side-section">
+        <h2 class="eyebrow">Filters</h2>
+        <div class="field-label" id="camera-label">Camera movement</div>
+        <div class="chips" id="camera-filter" role="radiogroup" aria-labelledby="camera-label">
+          <button class="chip" role="radio" data-camera="any">Any</button>
+          <button class="chip" role="radio" data-camera="still">Still</button>
+          <button class="chip" role="radio" data-camera="moving">Moving</button>
+          <button class="chip" role="radio" data-camera="pans">Pans</button>
+          <button class="chip" role="radio" data-camera="tilts">Tilts</button>
+        </div>
+        <p class="hint" id="camera-hint"></p>
+        <label class="check">
+          <input type="checkbox" id="set-aside-repeats"> <span>Set aside repeated takes</span>
+        </label>
+        <p class="hint" id="repeats-hint"></p>
       </div>
 
       <div class="side-section">

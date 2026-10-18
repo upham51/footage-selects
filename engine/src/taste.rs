@@ -131,6 +131,8 @@ pub enum MissReason {
     Stability,
     TooShort,
     OverLimit,
+    /// Set aside by the camera filter.
+    CameraFilter,
     NotAnalyzed,
 }
 
@@ -142,6 +144,7 @@ impl MissReason {
             MissReason::Stability => "stability under the threshold",
             MissReason::TooShort => "shorter than the shortest select",
             MissReason::OverLimit => "over the selects-per-clip limit",
+            MissReason::CameraFilter => "set aside by the camera filter",
             MissReason::NotAnalyzed => "clip not analyzed",
         }
     }
@@ -187,6 +190,7 @@ fn miss_reason(sel: &ClipSelection, start: f64, end: f64) -> MissReason {
         Some(s) => match s.status {
             SegmentStatus::TooShort => MissReason::TooShort,
             SegmentStatus::OverLimit => MissReason::OverLimit,
+            SegmentStatus::SetAside => MissReason::CameraFilter,
             SegmentStatus::BelowThreshold => match s.failed.first().map(|f| f.as_str()) {
                 Some("focus") => MissReason::Focus,
                 Some("exposure") => MissReason::Exposure,

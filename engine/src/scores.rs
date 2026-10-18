@@ -49,6 +49,12 @@ pub struct ScoreSeries {
     /// The main exposure problem per sample, as `ExposureIssue::code`.
     #[serde(default)]
     pub issue: Vec<u8>,
+    /// Camera velocity per second as a share of picture width: positive
+    /// `pan` turns right, positive `tilt` turns up. Zero where unmeasured.
+    #[serde(default)]
+    pub pan: Vec<f32>,
+    #[serde(default)]
+    pub tilt: Vec<f32>,
 }
 
 impl ScoreSeries {
@@ -197,6 +203,34 @@ pub fn motion_speeds(f: &FrameTable, width: u32) -> Vec<f32> {
         .collect()
 }
 
+/// Which way the camera turns at each sample, per second as a share of
+/// picture width: (pan, tilt), positive to the right and up.
+///
+/// Picture content moving left means the camera turned right, and content
+/// moving down means it turned up. Samples that could not be lined up count
+/// as not turning, except whip pans too fast to follow, whose shift is a
+/// lower bound but points the right way.
+pub fn camera_direction(f: &FrameTable, width: u32) -> (Vec<f32>, Vec<f32>) {
+    let n = f.len();
+    let w = width.max(1) as f32;
+    let mut pan = vec![0f32; n];
+    let mut tilt = vec![0f32; n];
+    for j in 1..n {
+        let too_fast = f.motion_ok[j] == 0 && (f.dx[j] != 0.0 || f.dy[j] != 0.0);
+        if f.motion_ok[j] == 0 && !too_fast {
+            continue;
+        }
+        let dt = (f.t[j] - f.t[j - 1]).max(1e-3);
+        pan[j] = (-f.dx[j] / w / dt * 1000.0).round() / 1000.0;
+        tilt[j] = (f.dy[j] / w / dt * 1000.0).round() / 1000.0;
+    }
+    if n > 1 {
+        pan[0] = pan[1];
+        tilt[0] = tilt[1];
+    }
+    (pan, tilt)
+}
+
 /// Camera velocity at every sample, in analysis pixels per nominal sample
 /// interval, and whether it was measured.
 ///
@@ -279,6 +313,7 @@ pub fn score_frames(frames: &FrameTable, sample_rate: f64, width: u32) -> ScoreS
 
 pub fn score_frames_with(frames: &FrameTable, sample_rate: f64, width: u32, tone: ToneContext) -> ScoreSeries {
     let (exposure, key_stops, clipped, issue) = exposure_series(frames, tone);
+    let (pan, tilt) = camera_direction(frames, width);
     ScoreSeries {
         t: frames.t.clone(),
         focus: focus_scores(&frames.lap),
@@ -288,6 +323,8 @@ pub fn score_frames_with(frames: &FrameTable, sample_rate: f64, width: u32, tone
         key_stops,
         clipped,
         issue,
+        pan,
+        tilt,
     }
 }
 

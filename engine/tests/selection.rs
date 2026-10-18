@@ -32,6 +32,7 @@ fn settings() -> SelectionSettings {
         max_length: 10.0,
         max_per_clip: 0,
         keep_moves_whole: false,
+        ..Default::default()
     }
 }
 
