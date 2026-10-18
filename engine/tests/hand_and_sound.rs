@@ -171,7 +171,7 @@ fn phones_give_time_place_and_light_and_other_cameras_borrow_the_place() {
     p.add_clip("/trip/IMG_0001.MOV", Ok(info("IMG_0001.MOV", phone))).unwrap();
     // A camera with only its clock (local time, labelled UTC), ten minutes later.
     let cam = RecordTags { creation_time: Some("2024-06-01T20:45:00Z".into()), ..Default::default() };
-    p.add_clip("/trip/C0001.MP4", Ok(info("C0001.MP4", cam))).unwrap();
+    p.add_clip("/trip/P1000001.MOV", Ok(info("P1000001.MOV", cam))).unwrap();
     // Midday, the next day, from the phone.
     let noon = RecordTags { creation_time: Some("2024-06-02T12:30:00Z".into()), location: Some("+38.7223-009.1393/".into()), phone: true, ..Default::default() };
     p.add_clip("/trip/IMG_0002.MOV", Ok(info("IMG_0002.MOV", noon))).unwrap();
@@ -192,4 +192,101 @@ fn phones_give_time_place_and_light_and_other_cameras_borrow_the_place() {
     // The light filter sets aside clips in other light, and any without a known light.
     p.selection.light = selects_engine::selection::LightFilter::GoldenHour;
     assert!(p.selection.light.allows(Some(Light::GoldenHour)) && !p.selection.light.allows(None));
+}
+
+fn timed_clip(name: &str, tags: selects_engine::probe::RecordTags) -> selects_engine::probe::ClipInfo {
+    use selects_engine::probe::ClipInfo;
+    use selects_engine::rate::Rate;
+    ClipInfo {
+        path: format!("/shoot/{name}"),
+        name: name.into(),
+        size: 1,
+        modified: 1,
+        duration: 10.0,
+        start_time: 0.0,
+        width: 3840,
+        height: 2160,
+        coded_width: 3840,
+        coded_height: 2160,
+        rotation: 0,
+        avg_fps: 23.976,
+        rate: Rate::new(24000, 1001),
+        variable_frame_rate: false,
+        codec: "h264".into(),
+        pix_fmt: "yuv420p".into(),
+        has_audio: false,
+        audio_channels: 0,
+        audio_sample_rate: 0,
+        timecode: None,
+        full_range: false,
+        color_transfer: String::new(),
+        detected_profile: None,
+        camera: None,
+        tags,
+    }
+}
+
+fn bright_analysis(level: f32) -> selects_engine::analyze::ClipAnalysis {
+    let mut a: selects_engine::analyze::ClipAnalysis = serde_json::from_value(serde_json::json!({
+        "version": 5, "sample_rate": 2.0, "width": 480, "height": 270,
+        "frames": { "t": [], "lap": [], "mean": [], "lo": [], "hi": [], "p2": [], "p98": [], "dx": [], "dy": [], "motion_ok": [] },
+        "complete": true, "decoder": "software", "elapsed": 1.0
+    }))
+    .unwrap();
+    a.frames.mean = vec![level; 10];
+    a
+}
+
+#[test]
+fn sony_afternoon_clips_are_daylight_and_named_in_local_time() {
+    use selects_engine::probe::RecordTags;
+    use selects_engine::project::Project;
+    use selects_engine::solar::Light;
+    let mut p = Project::new();
+    // Shi Shi beach, 22:50 UTC on 4 October 2026 is 15:50 local (UTC-7).
+    let tags = RecordTags { creation_time: Some("2026-10-04T22:50:00.000000Z".into()), brand: Some("XAVC".into()), ..Default::default() };
+    p.add_clip("/shoot/C7929.MP4", Ok(timed_clip("C7929.MP4", tags))).unwrap();
+    // The same camera, the brand tag missing; the name gives it away.
+    let tags = RecordTags { creation_time: Some("2026-10-04T23:05:00.000000Z".into()), ..Default::default() };
+    p.add_clip("/shoot/C7935.MP4", Ok(timed_clip("C7935.MP4", tags))).unwrap();
+    p.places.location = Some((48.284, -124.67));
+    let sc = selects_engine::scene::resolve(&p);
+    for s in &sc {
+        assert!(matches!(s.light, Some(Light::Daylight) | Some(Light::HarshMidday)), "{s:?}");
+        assert!(s.group.as_deref().unwrap().contains("afternoon"), "{s:?}");
+        assert_eq!(s.offset_minutes, Some(-480), "shown in the place's local time");
+    }
+    // Choosing UTC for the camera clock gives the same light and names.
+    p.places.clock_offset_minutes = Some(0);
+    let again = selects_engine::scene::resolve(&p);
+    assert_eq!(again[0].light, sc[0].light);
+    assert_eq!(again[0].group, sc[0].group);
+}
+
+#[test]
+fn a_clock_on_utc_is_recognised_from_bright_pictures() {
+    use selects_engine::probe::RecordTags;
+    use selects_engine::project::Project;
+    use selects_engine::solar::Light;
+    let mut p = Project::new();
+    // A camera that does not say its zone, clock on UTC, two daylight clips.
+    for (i, t) in ["2026-10-04T21:10:00Z", "2026-10-04T22:40:00Z"].iter().enumerate() {
+        let name = format!("P100000{i}.MOV");
+        let tags = RecordTags { creation_time: Some(t.to_string()), ..Default::default() };
+        let id = p.add_clip(&format!("/shoot/{name}"), Ok(timed_clip(&name, tags))).unwrap();
+        p.clip_mut(id).unwrap().analysis = Some(bright_analysis(110.0));
+    }
+    p.places.location = Some((48.284, -124.67));
+    let sc = selects_engine::scene::resolve(&p);
+    for s in &sc {
+        assert!(matches!(s.light, Some(Light::Daylight) | Some(Light::HarshMidday)), "{s:?}");
+        assert!(s.zone_estimated);
+        assert!(s.group.as_deref().unwrap().contains("afternoon"), "{s:?}");
+    }
+    // Dark pictures at the same clock times read as local time: night.
+    for c in p.clips.iter_mut() {
+        c.analysis = Some(bright_analysis(12.0));
+    }
+    let sc = selects_engine::scene::resolve(&p);
+    assert_eq!(sc[1].light, Some(Light::Night), "{:?}", sc[1]);
 }
