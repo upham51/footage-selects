@@ -54,7 +54,9 @@ fn stills_and_a_contact_sheet_are_written_for_every_select() {
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     let mut seen = 0;
-    let w = selects_engine::stills::export_stills(&p, &dir, "Test day", &AtomicBool::new(false), |d, _| seen = seen.max(d)).unwrap();
+    // A name typed with an extension still names the folder after the name.
+    let w = selects_engine::stills::export_stills(&p, &dir, "Test day.xml", &AtomicBool::new(false), |d, _| seen = seen.max(d)).unwrap();
+    assert_eq!(w.folder, dir.join("Test day stills"));
     assert_eq!(w.written, n);
     assert!(w.failed.is_empty(), "{:?}", w.failed);
     let jpgs: Vec<_> = std::fs::read_dir(&w.folder).unwrap().flatten().filter(|e| e.path().extension().map(|x| x == "jpg").unwrap_or(false)).collect();
@@ -66,6 +68,7 @@ fn stills_and_a_contact_sheet_are_written_for_every_select() {
     }
     let sheet = std::fs::read_to_string(&w.sheet).unwrap();
     assert!(sheet.contains("<img src=\"small/") && sheet.contains("Test day"));
+    assert!(!sheet.contains("Test day.xml"));
 }
 
 #[test]

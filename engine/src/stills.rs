@@ -113,6 +113,9 @@ pub fn export_stills(project: &Project, parent: &Path, name: &str, cancel: &Atom
     if jobs.is_empty() {
         return Err("There are no selects yet, so there are no stills to write. Analyze footage or lower a threshold first.".into());
     }
+    // A name typed as "Selects.xml" names the folder and the sheet "Selects".
+    let name = crate::export::strip_known_extensions(name.trim());
+    let name = if safe_name(name).is_empty() { "Selects" } else { name };
     let folder = parent.join(format!("{} stills", safe_name(name)));
     let small = folder.join("small");
     std::fs::create_dir_all(&small).map_err(|e| format!("The folder for the stills could not be made ({e}). Nothing was written. Choose a folder you can write to."))?;

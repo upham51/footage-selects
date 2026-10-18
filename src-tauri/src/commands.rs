@@ -583,7 +583,7 @@ pub async fn export_reel(app: AppHandle) -> CmdResult<Option<ExportResult>> {
     let project = state.project.lock().unwrap().clone();
     let plan = current_plan(&project)?;
     let music = project.reel.music.clone().ok_or("Choose a song first.")?;
-    let name = format!("{} reel", project.export.timeline_name.trim());
+    let name = format!("{} reel", selects_engine::export::strip_known_extensions(project.export.timeline_name.trim()));
     let safe: String = name.chars().map(|c| if c.is_alphanumeric() || c == ' ' || c == '-' || c == '_' { c } else { '_' }).collect();
     let mut dialog = app.dialog().file();
     if let Some(dir) = save_folder(&app) {
@@ -592,7 +592,7 @@ pub async fn export_reel(app: AppHandle) -> CmdResult<Option<ExportResult>> {
     let Some(picked) = dialog.set_title("Export reel (four files are written side by side)").set_file_name(format!("{}.xml", safe.trim())).blocking_save_file() else {
         return Ok(None);
     };
-    let base = picked.into_path().map_err(|e| e.to_string())?.with_extension("");
+    let base = selects_engine::export::export_base(&picked.into_path().map_err(|e| e.to_string())?);
     let tl = selects_engine::export::build_reel_timeline(&project, &plan, &music, project.reel.shape, &name);
     let written = selects_engine::export::write_timeline(&tl, &base, plan.notes.clone()).map_err(|e| e.to_string())?;
     Ok(Some(ExportResult {
@@ -827,7 +827,7 @@ pub async fn export_timeline(app: AppHandle) -> CmdResult<Option<ExportResult>> 
     let state = app.state::<AppState>();
     let (project, name) = {
         let p = state.project.lock().unwrap();
-        (p.clone(), p.export.timeline_name.clone())
+        (p.clone(), selects_engine::export::strip_known_extensions(p.export.timeline_name.trim()).to_string())
     };
     let safe: String = name
         .chars()
@@ -845,7 +845,7 @@ pub async fn export_timeline(app: AppHandle) -> CmdResult<Option<ExportResult>> 
         return Ok(None);
     };
     let path = picked.into_path().map_err(|e| e.to_string())?;
-    let base = path.with_extension("");
+    let base = selects_engine::export::export_base(&path);
     let written = selects_engine::export::write_all(&project, &base).map_err(|e| e.to_string())?;
     let mut stills = None;
     let mut warnings = written.warnings.clone();
