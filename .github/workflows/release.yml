@@ -153,7 +153,16 @@ jobs:
             echo "Update signing is not set up: this build cannot update itself."
             unset UPDATER_PUBLIC_KEY
           fi
-          npx tauri build "${args[@]}"
+          # On failure, surface the end of the build output as an annotation so it can be read without the log.
+          set +e
+          npx tauri build "${args[@]}" 2>&1 | tee build.log
+          rc=${PIPESTATUS[0]}
+          set -e
+          if [ "$rc" -ne 0 ]; then
+            tail -n 25 build.log | tr -d '\r' | sed 's/%/%25/g' | awk '{printf "%s%%0A", $0}' | sed 's/^/::error title=tauri build failed::/'
+            echo
+            exit "$rc"
+          fi
 
       - name: Collect installer and update files
         id: collect
