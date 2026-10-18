@@ -428,7 +428,7 @@ impl Project {
                 if s.light != crate::selection::LightFilter::Any && !s.light.allows(light) {
                     g.status = SegmentStatus::SetAside;
                     g.aside = Some(AsideReason::Light);
-                } else if s.set_aside_sound_problems && !g.sound.is_empty() {
+                } else if s.set_aside_sound_problems && g.bad_sound {
                     g.status = SegmentStatus::SetAside;
                     g.aside = Some(AsideReason::Sound);
                 }
@@ -592,6 +592,16 @@ impl Project {
             return Err(ProjectError::NotAProject);
         }
         let mut p: Project = serde_json::from_value(v).map_err(|_| ProjectError::NotAProject)?;
+        // Talking, pauses and the sound summary are judgements on the stored
+        // sound measurements; work them out again so a project saved by an
+        // earlier version gets today's judgement without measuring again.
+        for c in p.clips.iter_mut() {
+            if let Some(a) = c.analysis.as_mut() {
+                if let Some(t) = a.audio.as_ref() {
+                    a.sound = Some(crate::analyze::SoundMap::from_table(t));
+                }
+            }
+        }
         let max_id = p.clips.iter().map(|c| c.id).max().unwrap_or(0);
         p.next_id = p.next_id.max(max_id + 1);
         Ok(p)

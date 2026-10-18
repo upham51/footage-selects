@@ -431,8 +431,29 @@ const FLICKER_SHIFT_STEP: f64 = 0.25;
 /// less fine structure than this stay put rather than chase noise.
 const FLICKER_PLAIN: f64 = 0.002;
 
+/// `lp` moved down by `shift` rows with linear interpolation, and the weight
+/// of each row (1 where both the source rows and the current row are usable).
+fn resample_rows(lp: &[f64], pw: &[f64], cw: &[f64], shift: f64) -> (Vec<f64>, Vec<f64>) {
+    let n = lp.len();
+    let mut out = vec![0f64; n];
+    let mut wts = vec![0f64; n];
+    for y in 0..n {
+        let src = y as f64 - shift;
+        if src < 0.0 || src > (n - 1) as f64 {
+            continue;
+        }
+        let i = (src as usize).min(n - 2);
+        let f = src - i as f64;
+        if pw[i] > 0.0 && pw[i + 1] > 0.0 && cw[y] > 0.0 {
+            out[y] = lp[i] * (1.0 - f) + lp[i + 1] * f;
+            wts[y] = 1.0;
+        }
+    }
+    (out, wts)
+}
+
 /// Resamples the previous log row means to line up with the current ones and
-/// returns them with the weight of each row (1 where both are usable).
+/// returns them with the weight of each row (1 where both are usable) and the shift.
 /// Trial shifts are tried every 1/4 row up to 2 rows either way, and the best
 /// refined with two more and a parabola.
 ///
@@ -444,25 +465,9 @@ const FLICKER_PLAIN: f64 = 0.002;
 /// and all but removes flicker bands, whose period is at least 1/12 of the
 /// height. Otherwise moving bands, which look like a shift of the bands, would
 /// be lined up and cancelled in a plain scene.
-fn align_rows(lp: &[f64], pw: &[f64], lc: &[f64], cw: &[f64]) -> (Vec<f64>, Vec<f64>) {
+fn align_rows(lp: &[f64], pw: &[f64], lc: &[f64], cw: &[f64]) -> (Vec<f64>, Vec<f64>, f64) {
     let n = lp.len();
-    let resample = |shift: f64| -> (Vec<f64>, Vec<f64>) {
-        let mut out = vec![0f64; n];
-        let mut wts = vec![0f64; n];
-        for y in 0..n {
-            let src = y as f64 - shift;
-            if src < 0.0 || src > (n - 1) as f64 {
-                continue;
-            }
-            let i = (src as usize).min(n - 2);
-            let f = src - i as f64;
-            if pw[i] > 0.0 && pw[i + 1] > 0.0 && cw[y] > 0.0 {
-                out[y] = lp[i] * (1.0 - f) + lp[i + 1] * f;
-                wts[y] = 1.0;
-            }
-        }
-        (out, wts)
-    };
+    let resample = |shift: f64| resample_rows(lp, pw, cw, shift);
     // How badly the fine structure disagrees at a trial shift, plus a small
     // charge for shifting at all, so a plain picture stays where it is.
     let cost = |shift: f64| -> f64 {
@@ -498,7 +503,7 @@ fn align_rows(lp: &[f64], pw: &[f64], lc: &[f64], cw: &[f64]) -> (Vec<f64>, Vec<
         shift += (0.5 * (l - r) / denom).clamp(-1.0, 1.0) * half;
     }
     let (ls, wts) = resample(shift);
-    (ls, wts)
+    (ls, wts, shift)
 }
 
 /// Light flicker banding between two samples taken while the camera is still: lights on mains power pulse at 100 or 120 Hz, which a rolling shutter turns into horizontal bands that move between frames. Divide the current row means by the previous ones (ignoring very dark rows), detrend, and measure the strongest sinusoid with between 0.7 and 12 cycles over the picture height. Returns the band amplitude as a share of brightness (0.03 means the bands swing about 3% either side), 0 when nothing periodic is there. Static scene structure cancels out in the ratio. The caller only calls this when the camera barely moved between the samples.
@@ -512,6 +517,38 @@ fn align_rows(lp: &[f64], pw: &[f64], lc: &[f64], cw: &[f64]) -> (Vec<f64>, Vec<
 /// between half and `FLICKER_MAX_GAIN` halves of the ratio amplitude, so bands
 /// that barely moved, which look like scene structure, are not trusted further.
 pub fn flicker_strength(prev_rows: &[f32], cur_rows: &[f32]) -> f32 {
+    flicker_strength_strips(prev_rows, cur_rows, &[], &[])
+}
+
+/// Vertical strips of the picture whose row means `flicker_strength_strips` compares.
+pub const FLICKER_STRIPS: usize = 6;
+
+/// Mean of each row in each of `FLICKER_STRIPS` vertical strips, left to right.
+pub fn strip_row_means(gray: &[u8], w: usize, h: usize) -> Vec<Vec<f32>> {
+    if w < FLICKER_STRIPS {
+        return Vec::new();
+    }
+    (0..FLICKER_STRIPS)
+        .map(|s| {
+            let (x0, x1) = (s * w / FLICKER_STRIPS, (s + 1) * w / FLICKER_STRIPS);
+            gray.chunks_exact(w)
+                .take(h)
+                .map(|row| row[x0..x1].iter().map(|&v| v as u32).sum::<u32>() as f32 / (x1 - x0) as f32)
+                .collect()
+        })
+        .collect()
+}
+
+/// `flicker_strength`, with the change between the samples read from vertical
+/// strips of the picture (`strip_row_means`): for each row, the median of the
+/// strips' changes. Flicker bands come from the shutter reading the sensor out
+/// row by row, so they darken a whole row from edge to edge and every strip
+/// shows them. Something moving in part of the picture (a passing car, a
+/// sweeping light, a screen, the moving parts of a test pattern) changes the
+/// means of the rows it crosses too, and a sinusoid fitted to whole rows takes
+/// part of that for bands; in the median of the strips it only counts where it
+/// covers most of the width. With fewer than 3 strips, whole rows are used.
+pub fn flicker_strength_strips(prev_rows: &[f32], cur_rows: &[f32], prev_strips: &[Vec<f32>], cur_strips: &[Vec<f32>]) -> f32 {
     let n = prev_rows.len().min(cur_rows.len());
     if n < 32 {
         return 0.0;
@@ -521,9 +558,8 @@ pub fn flicker_strength(prev_rows: &[f32], cur_rows: &[f32]) -> f32 {
     let cw: Vec<f64> = (0..n).map(|y| ok(cur_rows[y]) as u32 as f64).collect();
     let lp_raw: Vec<f64> = (0..n).map(|y| (prev_rows[y].max(1.0) as f64).ln()).collect();
     let mut lc: Vec<f64> = (0..n).map(|y| (cur_rows[y].max(1.0) as f64).ln()).collect();
-    let (mut lp, mut wts) = align_rows(&lp_raw, &pw, &lc, &cw);
-    let valid = wts.iter().sum::<f64>();
-    if valid < (n as f64 / 3.0).max(32.0) {
+    let (mut lp, mut wts, shift) = align_rows(&lp_raw, &pw, &lc, &cw);
+    if wts.iter().sum::<f64>() < (n as f64 / 3.0).max(32.0) {
         return 0.0;
     }
     for (c, w) in lc.iter_mut().zip(&mut wts) {
@@ -533,7 +569,43 @@ pub fn flicker_strength(prev_rows: &[f32], cur_rows: &[f32]) -> f32 {
     }
     detrend(&mut lp, &wts);
     detrend(&mut lc, &wts);
-    let d: Vec<f64> = lc.iter().zip(&lp).map(|(c, p)| c - p).collect();
+    let strips = prev_strips.len().min(cur_strips.len());
+    let d: Vec<f64> = if strips >= 3 && prev_strips.iter().chain(cur_strips).all(|s| s.len() >= n) {
+        // The same line-up as the whole rows, then each strip's change on its
+        // own, detrended, and the median across the strips for each row.
+        let changes: Vec<Vec<f64>> = (0..strips)
+            .map(|k| {
+                let (p, c) = (&prev_strips[k], &cur_strips[k]);
+                let spw: Vec<f64> = (0..n).map(|y| (pw[y] > 0.0 && ok(p[y])) as u32 as f64).collect();
+                let scw: Vec<f64> = (0..n).map(|y| (cw[y] > 0.0 && ok(c[y])) as u32 as f64).collect();
+                let slp: Vec<f64> = (0..n).map(|y| (p[y].max(1.0) as f64).ln()).collect();
+                let (mut sp, sw) = resample_rows(&slp, &spw, &scw, shift);
+                let mut sc: Vec<f64> = (0..n).map(|y| if sw[y] > 0.0 { (c[y].max(1.0) as f64).ln() } else { 0.0 }).collect();
+                detrend(&mut sp, &sw);
+                detrend(&mut sc, &sw);
+                (0..n).map(|y| if sw[y] > 0.0 && wts[y] > 0.0 { sc[y] - sp[y] } else { f64::NAN }).collect()
+            })
+            .collect();
+        let mut column = Vec::with_capacity(strips);
+        (0..n)
+            .map(|y| {
+                column.clear();
+                column.extend(changes.iter().map(|c| c[y]).filter(|v| v.is_finite()));
+                if column.len() * 2 <= strips {
+                    // Too few strips usable in this row: leave it out.
+                    wts[y] = 0.0;
+                    return 0.0;
+                }
+                median_of(&mut column)
+            })
+            .collect()
+    } else {
+        lc.iter().zip(&lp).map(|(c, p)| c - p).collect()
+    };
+    let valid = wts.iter().sum::<f64>();
+    if valid < (n as f64 / 3.0).max(32.0) {
+        return 0.0;
+    }
 
     // Strongest sinusoid in the ratio, on a grid refined by a parabola.
     let steps = ((FLICKER_MAX_CYCLES - FLICKER_MIN_CYCLES) / FLICKER_STEP).round() as usize;
@@ -581,13 +653,15 @@ pub fn flicker_strength(prev_rows: &[f32], cur_rows: &[f32]) -> f32 {
 
 // Rolling-shutter wobble.
 
-/// Horizontal bands of rows measured on their own.
-const WOBBLE_BANDS: usize = 8;
-/// Search radius around the global shift, in plane pixels.
-const WOBBLE_RADIUS: i32 = 3;
+/// Horizontal bands of rows measured on their own. Enough for about 3 bands
+/// per cycle of a wobble with 8 cycles over the picture height, as a fast
+/// vibration gives; with fewer bands such a wobble averages out inside each band.
+const WOBBLE_BANDS: usize = 24;
+/// Search radius around the global shift, in analysis pixels.
+const WOBBLE_RADIUS: i32 = 8;
 const SIDE: usize = 2 * WOBBLE_RADIUS as usize + 1;
-/// Bands with a usable shift needed for a reading.
-const WOBBLE_MIN_BANDS: usize = 5;
+/// Bands with a usable shift on both halves needed for a reading.
+const WOBBLE_MIN_BANDS: usize = 12;
 /// Rise in mean squared difference one pixel away from the best match that
 /// a band needs to count as textured.
 const WOBBLE_MIN_CURVATURE: f64 = 4.0;
@@ -624,45 +698,122 @@ fn parabola_vertex(l: f64, c: f64, r: f64) -> f64 {
     }
 }
 
-/// Least-squares line through (t, v) points, returned as residuals.
-fn line_residuals(t: &[f64], v: &[f64]) -> Vec<f64> {
-    let n = t.len() as f64;
-    let (st, sv) = (t.iter().sum::<f64>(), v.iter().sum::<f64>());
-    let stt: f64 = t.iter().map(|x| x * x).sum();
-    let stv: f64 = t.iter().zip(v).map(|(x, y)| x * y).sum();
-    let det = n * stt - st * st;
-    let (a, b) = if det.abs() < 1e-12 { (sv / n, 0.0) } else { ((sv * stt - stv * st) / det, (stv * n - sv * st) / det) };
+fn median_of(v: &mut [f64]) -> f64 {
+    v.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    let mid = v.len() / 2;
+    if v.is_empty() {
+        0.0
+    } else if v.len().is_multiple_of(2) {
+        0.5 * (v[mid - 1] + v[mid])
+    } else {
+        v[mid]
+    }
+}
+
+/// Residuals of (t, v) points from a robust straight line (Theil-Sen: the
+/// median of the slopes between every pair of points, then the median
+/// intercept). A few points far off the line, such as bands where something
+/// moved, do not pull the line toward them.
+fn robust_line_residuals(t: &[f64], v: &[f64]) -> Vec<f64> {
+    let n = t.len();
+    let mut slopes = Vec::with_capacity(n * n.saturating_sub(1) / 2);
+    for i in 0..n {
+        for j in i + 1..n {
+            if (t[j] - t[i]).abs() > 1e-9 {
+                slopes.push((v[j] - v[i]) / (t[j] - t[i]));
+            }
+        }
+    }
+    let b = median_of(&mut slopes);
+    let mut icpt: Vec<f64> = t.iter().zip(v).map(|(x, y)| y - b * x).collect();
+    let a = median_of(&mut icpt);
     t.iter().zip(v).map(|(x, y)| y - a - b * x).collect()
 }
 
-/// RMS residual of the band shifts around their best straight lines.
-fn wobble_residual(pos: &[f64], sx: &[f64], sy: &[f64]) -> (f64, usize) {
-    let rx = line_residuals(pos, sx);
-    let ry = line_residuals(pos, sy);
-    let r2: Vec<f64> = rx.iter().zip(&ry).map(|(a, b)| a * a + b * b).collect();
-    let worst = r2
-        .iter()
-        .enumerate()
-        .fold((0usize, f64::MIN), |b, (k, &e)| if e > b.1 { (k, e) } else { b })
-        .0;
-    let mean = r2.iter().sum::<f64>() / r2.len() as f64;
-    (mean.sqrt(), worst)
+/// The shift of one block of `cur` (rows b0..b1, columns x0..x1) against
+/// `prev`, searched around (cx, cy) by walking downhill through the sum of
+/// squared differences, refined by a parabola. Err(true) when the best match
+/// lies at the edge of the search, Err(false) when the block has too little texture.
+#[allow(clippy::too_many_arguments)]
+fn block_shift(prev: &Plane, cur: &Plane, b0: usize, b1: usize, x0: usize, x1: usize, cx: i32, cy: i32) -> Result<(f64, f64), bool> {
+    let w = cur.w;
+    let r = WOBBLE_RADIUS;
+    let pixels = ((b1 - b0) * (x1 - x0)) as f64;
+    let mut ssd = [u64::MAX; SIDE * SIDE];
+    let eval = |i: usize, j: usize, ssd: &mut [u64; SIDE * SIDE]| {
+        if ssd[j * SIDE + i] != u64::MAX {
+            return;
+        }
+        let (sx, sy) = (cx + i as i32 - r, cy + j as i32 - r);
+        let px0 = (x0 as i32 - sx) as usize;
+        let mut acc = 0u64;
+        for y in b0..b1 {
+            let py = (y as i32 - sy) as usize;
+            let c = &cur.px[y * w + x0..y * w + x1];
+            let p = &prev.px[py * w + px0..py * w + px0 + (x1 - x0)];
+            acc += row_ssd(c, p) as u64;
+        }
+        ssd[j * SIDE + i] = acc;
+    };
+    // Walk downhill from the global shift until no neighbour matches better.
+    // Block shifts sit within a few pixels of the global one, so this visits
+    // far fewer than all the candidates.
+    let (mut bi, mut bj) = (r as usize, r as usize);
+    loop {
+        let mut best = (bi, bj);
+        for j in bj - 1..=bj + 1 {
+            for i in bi - 1..=bi + 1 {
+                eval(i, j, &mut ssd);
+                if ssd[j * SIDE + i] < ssd[best.1 * SIDE + best.0] {
+                    best = (i, j);
+                }
+            }
+        }
+        if best == (bi, bj) {
+            break;
+        }
+        (bi, bj) = best;
+        if bi == 0 || bj == 0 || bi == SIDE - 1 || bj == SIDE - 1 {
+            return Err(true);
+        }
+    }
+    let at = |i: usize, j: usize| ssd[j * SIDE + i] as f64 / pixels;
+    let c = at(bi, bj);
+    let (l, rr, u, d) = (at(bi - 1, bj), at(bi + 1, bj), at(bi, bj - 1), at(bi, bj + 1));
+    if (l + rr - 2.0 * c) * 0.5 < WOBBLE_MIN_CURVATURE || (u + d - 2.0 * c) * 0.5 < WOBBLE_MIN_CURVATURE {
+        return Err(false);
+    }
+    Ok(((cx + bi as i32 - r) as f64 + parabola_vertex(l, c, rr), (cy + bj as i32 - r) as f64 + parabola_vertex(u, c, d)))
 }
 
-/// Rolling-shutter wobble ("jello"), typical of drone propeller vibration or a loose mount: within one frame, horizontal bands of rows are displaced sideways (and up and down) by different amounts in a wavy pattern. Given two consecutive pyramid levels' planes (the same level of `MotionFrame::levels` for the previous and current sample, normally the half resolution level) and the global shift between them measured at that plane's resolution, estimate each of about 8 horizontal bands' own shift with a small local search (plus or minus 3 pixels around the global shift, sub-pixel by parabola), fit a straight line through the band shifts against band position (a pan with a rolling shutter makes a straight skew, which is fine), and return the RMS of the residual in pixels of that plane. Return 0 when the bands have too little texture to measure. Moving subjects should not dominate: use a robust fit or drop the worst band.
+/// Rolling-shutter wobble ("jello"), typical of drone propeller vibration or a loose mount: within one frame, horizontal bands of rows are displaced sideways (and up and down) by different amounts in a wavy pattern. Given the previous and current analysis pictures (level 0 of `MotionFrame::levels`) and the global shift between them, returns how far the bands wander from a straight line, as an RMS in analysis pixels. 0 when the bands have too little texture to measure.
 ///
 /// Shifts follow `metrics::shifted_difference`: content that moved right by
-/// dx pixels has dx positive. Each band is matched by the sum of squared
-/// differences over the same pixels of `cur` for every candidate shift, which
-/// keeps the scores comparable and the parabola fit well behaved. The search
-/// walks downhill from the global shift through the 7 by 7 candidates rather
-/// than trying them all. Bands whose best match would lie beyond the search,
-/// or with too little texture, are left out; with enough bands left, the band
-/// that fits the lines worst is dropped before the final residual, so a
-/// subject moving through one band does not read as wobble.
+/// dx pixels has dx positive. The picture is cut into 24 bands of rows, and
+/// each band into a left and a right half. Each half is matched on its own
+/// (plus or minus 8 pixels around the global shift, sub-pixel by parabola),
+/// and a straight line is fitted through the shifts of each side against band
+/// position (a robust fit, so bands where something moved do not bend it): a
+/// pan with a rolling shutter makes a straight skew, which is fine. What is
+/// left from the line is the wobble. When most bands match
+/// beyond the search, the reading is -1 (not measured).
+///
+/// A rolling shutter displaces whole rows, so real wobble leaves the same
+/// residual on both sides, while a subject moving on one side, or matching
+/// noise, leaves residuals that do not agree. The reading is therefore the
+/// square root of the median product of the two sides' residuals rather than
+/// of either side's own: noise averages out instead of adding up, which
+/// matters for heavily compressed footage. Wobble runs through the whole
+/// height, so the median stays near the mean square of the residual, while
+/// something moving through a few bands, even across the whole width (water,
+/// a passing train), leaves most bands at zero and does not count.
+///
+/// Measured on the full analysis picture with narrow bands, because fast
+/// vibration makes many cycles over the height; on the half-size level with 8
+/// bands, 8 cycles cancel out inside each band.
 pub fn wobble(prev: &Plane, cur: &Plane, dx: f32, dy: f32) -> f32 {
     let (w, h) = (cur.w, cur.h);
-    if prev.w != w || prev.h != h || w < 32 || h < 32 || prev.px.len() < w * h || cur.px.len() < w * h {
+    if prev.w != w || prev.h != h || w < 64 || h < 64 || prev.px.len() < w * h || cur.px.len() < w * h {
         return 0.0;
     }
     if !dx.is_finite() || !dy.is_finite() {
@@ -672,10 +823,11 @@ pub fn wobble(prev: &Plane, cur: &Plane, dx: f32, dy: f32) -> f32 {
     let r = WOBBLE_RADIUS;
     let (wi, hi) = (w as i32, h as i32);
     let margin = cx.abs() + r + 2;
-    if 2 * margin + 16 > wi {
+    if 2 * margin + 32 > wi {
         return 0.0;
     }
     let (x0, x1) = (margin as usize, (wi - margin) as usize);
+    let xm = (x0 + x1) / 2;
     // Rows of `cur` whose matching row of `prev` exists for every candidate.
     let ylo = (cy + r).max(0);
     let yhi = (hi + cy - r).min(hi);
@@ -684,76 +836,39 @@ pub fn wobble(prev: &Plane, cur: &Plane, dx: f32, dy: f32) -> f32 {
     }
     let (ylo, yhi) = (ylo as usize, yhi as usize);
     let mut pos = Vec::with_capacity(WOBBLE_BANDS);
-    let mut bx = Vec::with_capacity(WOBBLE_BANDS);
-    let mut by = Vec::with_capacity(WOBBLE_BANDS);
+    let mut left = Vec::with_capacity(WOBBLE_BANDS);
+    let mut right = Vec::with_capacity(WOBBLE_BANDS);
+    // Bands whose match lay beyond the search.
+    let mut beyond = 0usize;
     for band in 0..WOBBLE_BANDS {
         let b0 = ylo + band * (yhi - ylo) / WOBBLE_BANDS;
         let b1 = ylo + (band + 1) * (yhi - ylo) / WOBBLE_BANDS;
-        let pixels = ((b1 - b0) * (x1 - x0)) as f64;
-        // Sum of squared differences for one candidate, worked out on demand.
-        let mut ssd = [u64::MAX; SIDE * SIDE];
-        let eval = |i: usize, j: usize, ssd: &mut [u64; SIDE * SIDE]| {
-            if ssd[j * SIDE + i] != u64::MAX {
-                return;
+        let (l, rt) = match (block_shift(prev, cur, b0, b1, x0, xm, cx, cy), block_shift(prev, cur, b0, b1, xm, x1, cx, cy)) {
+            (Ok(l), Ok(rt)) => (l, rt),
+            (l, rt) => {
+                beyond += (l == Err(true) || rt == Err(true)) as usize;
+                continue;
             }
-            let (sx, sy) = (cx + i as i32 - r, cy + j as i32 - r);
-            let px0 = (x0 as i32 - sx) as usize;
-            let mut acc = 0u64;
-            for y in b0..b1 {
-                let py = (y as i32 - sy) as usize;
-                let c = &cur.px[y * w + x0..y * w + x1];
-                let p = &prev.px[py * w + px0..py * w + px0 + (x1 - x0)];
-                acc += row_ssd(c, p) as u64;
-            }
-            ssd[j * SIDE + i] = acc;
         };
-        // Walk downhill from the global shift until no neighbour matches
-        // better. Band shifts sit within a pixel or two of the global one, so
-        // this visits far fewer than all 49 candidates.
-        let (mut bi, mut bj) = (r as usize, r as usize);
-        let mut on_edge = false;
-        loop {
-            let mut best = (bi, bj);
-            for j in bj - 1..=bj + 1 {
-                for i in bi - 1..=bi + 1 {
-                    eval(i, j, &mut ssd);
-                    if ssd[j * SIDE + i] < ssd[best.1 * SIDE + best.0] {
-                        best = (i, j);
-                    }
-                }
-            }
-            if best == (bi, bj) {
-                break;
-            }
-            (bi, bj) = best;
-            if bi == 0 || bj == 0 || bi == SIDE - 1 || bj == SIDE - 1 {
-                on_edge = true;
-                break;
-            }
-        }
-        if on_edge {
-            continue;
-        }
-        let at = |i: usize, j: usize| ssd[j * SIDE + i] as f64 / pixels;
-        let c = at(bi, bj);
-        let (l, rr, u, d) = (at(bi - 1, bj), at(bi + 1, bj), at(bi, bj - 1), at(bi, bj + 1));
-        if (l + rr - 2.0 * c) * 0.5 < WOBBLE_MIN_CURVATURE || (u + d - 2.0 * c) * 0.5 < WOBBLE_MIN_CURVATURE {
-            continue;
-        }
-        let fx = parabola_vertex(l, c, rr);
-        let fy = parabola_vertex(u, c, d);
         pos.push((b0 + b1) as f64 * 0.5 / h as f64);
-        bx.push((cx + bi as i32 - r) as f64 + fx);
-        by.push((cy + bj as i32 - r) as f64 + fy);
+        left.push(l);
+        right.push(rt);
     }
     if pos.len() < WOBBLE_MIN_BANDS {
-        return 0.0;
+        // Mostly out of reach: more movement than the search covers, which
+        // says nothing either way, so the sample is left unmeasured.
+        return if beyond * 2 >= WOBBLE_BANDS { -1.0 } else { 0.0 };
     }
-    let (_, worst) = wobble_residual(&pos, &bx, &by);
-    pos.remove(worst);
-    bx.remove(worst);
-    by.remove(worst);
-    wobble_residual(&pos, &bx, &by).0 as f32
+    // Residuals of each side from its own straight lines, and their product per band.
+    let side = |s: &[(f64, f64)]| {
+        let x: Vec<f64> = s.iter().map(|v| v.0).collect();
+        let y: Vec<f64> = s.iter().map(|v| v.1).collect();
+        (robust_line_residuals(&pos, &x), robust_line_residuals(&pos, &y))
+    };
+    let ((lx, ly), (rx, ry)) = (side(&left), side(&right));
+    let mut p: Vec<f64> = (0..pos.len()).map(|k| lx[k] * rx[k] + ly[k] * ry[k]).collect();
+    let median = median_of(&mut p);
+    median.max(0.0).sqrt() as f32
 }
 
 // White balance cue.
@@ -764,11 +879,23 @@ const NEUTRAL_LUMA: (u32, u32) = (40, 220);
 const NEUTRAL_CHROMA: i32 = 30;
 /// Share of chroma samples that must be near-neutral for a reading.
 const NEUTRAL_MIN_SHARE: f32 = 0.02;
+/// Smallest luma step, in levels, between a 2 by 2 block and one of its four
+/// neighbours for the block to count as textured rather than smooth.
+const NEUTRAL_DETAIL: u32 = 3;
 
-/// White balance cue from a frame in full-range YUV 4:2:0 (yuvj420p): y is w*h, u and v are (w/2)*(h/2), all 0..255 with 128 neutral chroma. Average chroma of near-neutral pixels (luma between about 40 and 220, chroma distance from neutral under about 30 codes). Returns (cb - 128, cr - 128) means, or None when fewer than 2% of pixels are near-neutral.
+/// White balance cue from a frame in full-range YUV 4:2:0 (yuvj420p): y is w*h, u and v are (w/2)*(h/2), all 0..255 with 128 neutral chroma. Average chroma of near-neutral, textured pixels (luma between about 40 and 220, chroma distance from neutral under about 30 codes, a visible luma step to a neighbouring block). Returns (cb - 128, cr - 128) means, or None when fewer than 2% of pixels qualify.
 ///
 /// Each chroma sample is paired with the mean of the 2 by 2 luma block it
 /// covers. Odd sizes with rounded-up chroma planes are accepted too.
+///
+/// Smooth areas are left out. Overcast or hazy sky, fog and haze are near
+/// neutral but take their colour from the light and the air, not from the
+/// camera's setting: a clip that is mostly grey sky reads cooler than the
+/// forest beside it with the same white balance. They are also smooth at this
+/// size, where rock, bark, sand, gravel and concrete show texture, so leaving
+/// out blocks within `NEUTRAL_DETAIL` levels of all four neighbours drops the
+/// sky without looking at its colour (which would bias every reading). A frame
+/// that is all sky then has too few textured neutral pixels and gives no reading.
 pub fn neutral_chroma(y: &[u8], u: &[u8], v: &[u8], w: usize, h: usize) -> Option<(f32, f32)> {
     let (cw, ch) = if u.len() >= w.div_ceil(2) * h.div_ceil(2) && v.len() >= w.div_ceil(2) * h.div_ceil(2) {
         (w.div_ceil(2), h.div_ceil(2))
@@ -778,21 +905,37 @@ pub fn neutral_chroma(y: &[u8], u: &[u8], v: &[u8], w: usize, h: usize) -> Optio
     if cw == 0 || ch == 0 || y.len() < w * h || u.len() < cw * ch || v.len() < cw * ch {
         return None;
     }
-    let (mut n, mut su, mut sv) = (0u64, 0i64, 0i64);
+    // Sum of each 2 by 2 luma block, one per chroma sample.
+    let mut blocks = vec![0u32; cw * ch];
     for j in 0..ch {
         let y0 = (2 * j).min(h - 1);
         let y1 = (2 * j + 1).min(h - 1);
         let (ra, rb) = (&y[y0 * w..y0 * w + w], &y[y1 * w..y1 * w + w]);
-        let (ur, vr) = (&u[j * cw..j * cw + cw], &v[j * cw..j * cw + cw]);
-        for i in 0..cw {
+        for (i, b) in blocks[j * cw..(j + 1) * cw].iter_mut().enumerate() {
             let x0 = (2 * i).min(w - 1);
             let x1 = (2 * i + 1).min(w - 1);
-            let luma4 = ra[x0] as u32 + ra[x1] as u32 + rb[x0] as u32 + rb[x1] as u32;
+            *b = ra[x0] as u32 + ra[x1] as u32 + rb[x0] as u32 + rb[x1] as u32;
+        }
+    }
+    let step = 4 * NEUTRAL_DETAIL;
+    let (mut n, mut su, mut sv) = (0u64, 0i64, 0i64);
+    for j in 0..ch {
+        let (ur, vr) = (&u[j * cw..j * cw + cw], &v[j * cw..j * cw + cw]);
+        for i in 0..cw {
+            let luma4 = blocks[j * cw + i];
             if luma4 < 4 * NEUTRAL_LUMA.0 || luma4 > 4 * NEUTRAL_LUMA.1 {
                 continue;
             }
             let (cb, cr) = (ur[i] as i32 - 128, vr[i] as i32 - 128);
             if cb * cb + cr * cr >= NEUTRAL_CHROMA * NEUTRAL_CHROMA {
+                continue;
+            }
+            let differs = |k: usize| blocks[k].abs_diff(luma4) >= step;
+            let textured = (i > 0 && differs(j * cw + i - 1))
+                || (i + 1 < cw && differs(j * cw + i + 1))
+                || (j > 0 && differs((j - 1) * cw + i))
+                || (j + 1 < ch && differs((j + 1) * cw + i));
+            if !textured {
                 continue;
             }
             n += 1;
@@ -1179,93 +1322,127 @@ mod tests {
     // Rolling-shutter wobble.
 
     /// A picture whose content moved by (dx + row_shift(y), dy) from the field.
-    fn displaced(field: &Field, w: usize, h: usize, dx: f32, dy: f32, row_shift: &dyn Fn(f32) -> f32, seed: u32) -> Plane {
-        let px: Vec<f32> = (0..w * h)
+    fn moved(field: &Field, dx: f32, dy: f32, row_shift: &dyn Fn(f32) -> f32, noise: f32, seed: u32) -> Plane {
+        let px: Vec<f32> = (0..W * H)
             .map(|k| {
-                let (x, y) = ((k % w) as f32, (k / w) as f32);
+                let (x, y) = ((k % W) as f32, (k / W) as f32);
                 field.at(x - dx - row_shift(y), y - dy)
             })
             .collect();
-        Plane { w, h, px: noisy(&px, 1.0, seed) }
+        Plane { w: W, h: H, px: noisy(&px, noise, seed) }
+    }
+
+    /// A sine wobble of `amp` pixels and `cycles` over the height, at `phase` turns.
+    fn sine_rows(amp: f32, cycles: f32, phase: f32) -> impl Fn(f32) -> f32 {
+        move |y: f32| amp * (2.0 * std::f32::consts::PI * (cycles * y / H as f32 + phase)).sin()
     }
 
     #[test]
     fn picture_wobble_separates_jello_from_pans_and_skew() {
-        let (w, h) = (W / 2, H / 2);
-        let field = Field::new(w + 40, h + 40, 31);
-        let prev = displaced(&field, w, h, 0.0, 0.0, &|_| 0.0, 1);
+        let field = Field::new(W + 40, H + 40, 31);
         let none = |_: f32| 0.0;
-        let skew = |y: f32| 0.02 * (y - h as f32 / 2.0);
-        let jello = |y: f32| 1.5 * (2.0 * std::f32::consts::PI * 1.5 * y / h as f32).sin();
-        type Case<'a> = (&'a str, f32, f32, &'a dyn Fn(f32) -> f32);
-        let cases: [Case; 5] = [
-            ("still", 0.0, 0.0, &none),
-            ("shift", 2.3, -1.4, &none),
-            ("skew", 1.6, 0.7, &skew),
-            ("jello", 0.0, 0.0, &jello),
-            ("jello while panning", 3.4, 0.6, &jello),
+        let skew = |y: f32| 0.02 * (y - H as f32 / 2.0);
+        let slow = sine_rows(1.5, 1.5, 0.0);
+        // Fast vibration: 8 cycles over the height, as the feature test clip
+        // made with a 6 pixel wobble at 1280 wide (2.25 analysis pixels), the
+        // two samples a third of a cycle apart.
+        let fast_prev = sine_rows(2.25, 8.0, 0.0);
+        let fast = sine_rows(2.25, 8.0, 0.33);
+        type Case<'a> = (&'a str, &'a dyn Fn(f32) -> f32, f32, f32, &'a dyn Fn(f32) -> f32);
+        let cases: [Case; 7] = [
+            ("still", &none, 0.0, 0.0, &none),
+            ("shift", &none, 2.3, -1.4, &none),
+            ("skew", &none, 1.6, 0.7, &skew),
+            ("jello", &none, 0.0, 0.0, &slow),
+            ("jello while panning", &none, 3.4, 0.6, &slow),
+            ("fast jello", &fast_prev, 0.0, 0.0, &fast),
+            ("fast jello while panning", &fast_prev, -2.6, 0.3, &fast),
         ];
         let mut readings = Vec::new();
-        for (name, dx, dy, f) in cases {
-            let cur = displaced(&field, w, h, dx, dy, f, 2);
+        for (name, before, dx, dy, f) in cases {
+            // Noise of 4 levels, like heavily compressed footage.
+            let prev = moved(&field, 0.0, 0.0, before, 4.0, 1);
+            let cur = moved(&field, dx, dy, f, 4.0, 2);
             let got = wobble(&prev, &cur, dx, dy);
             println!("picture wobble {name}: {got:.3} px");
             readings.push(got);
         }
         for (k, name) in ["still", "shift", "skew"].iter().enumerate() {
-            assert!(readings[k] < 0.15, "{name}: {}", readings[k]);
+            assert!(readings[k] < 0.1, "{name}: {}", readings[k]);
         }
-        assert!(readings[3] > 0.6 && readings[4] > 0.6, "jello {} {}", readings[3], readings[4]);
+        for (k, name) in ["jello", "jello while panning", "fast jello", "fast jello while panning"].iter().enumerate() {
+            assert!(readings[k + 3] > 0.5, "{name}: {}", readings[k + 3]);
+        }
     }
 
     #[test]
     fn picture_wobble_through_the_motion_pyramid() {
-        // Full size frames with 3 pixels of jello, measured on the half level
-        // as the app does, with the global shift from `estimate_shift`.
+        // Full size frames with jello, measured as the app does, with the
+        // global shift from `estimate_shift`.
         let field = Field::new(W + 40, H + 40, 41);
         let full = |dx: f32, f: &dyn Fn(f32) -> f32, seed: u32| {
-            let p = displaced(&field, W, H, dx, 0.0, f, seed);
+            let p = moved(&field, dx, 0.0, f, 1.0, seed);
             motion_frame(&p.px, W, H)
         };
         let prev = full(0.0, &|_| 0.0, 1);
-        let jello = |y: f32| 3.0 * (2.0 * std::f32::consts::PI * 2.0 * y / H as f32).sin();
+        let jello = sine_rows(3.0, 2.0, 0.0);
         let pan = full(4.0, &|_| 0.0, 2);
         let wobbly = full(4.0, &jello, 3);
-        for (name, cur, min, max) in [("pan", &pan, 0.0, 0.15), ("jello", &wobbly, 0.6, 9.0)] {
+        for (name, cur, min, max) in [("pan", &pan, 0.0, 0.1), ("jello", &wobbly, 0.5, 9.0)] {
             let (dx, dy, _) = estimate_shift(&prev, cur);
-            let got = wobble(&prev.levels[1], &cur.levels[1], dx / 2.0, dy / 2.0);
+            let got = wobble(&prev.levels[0], &cur.levels[0], dx, dy);
             println!("picture wobble pyramid {name}: shift ({dx:.2}, {dy:.2}) wobble {got:.3} px");
             assert!(got >= min && got <= max, "{name}: {got}");
         }
     }
 
     #[test]
-    fn picture_wobble_ignores_a_small_moving_subject_and_flat_pictures() {
-        let (w, h) = (W / 2, H / 2);
-        let field = Field::new(w + 40, h + 40, 51);
-        let other = Field::new(w + 40, h + 40, 52);
-        let still = |subject_x: f32, seed: u32| {
-            let px: Vec<f32> = (0..w * h)
+    fn picture_wobble_ignores_moving_subjects_and_flat_pictures() {
+        let field = Field::new(W + 40, H + 40, 51);
+        let other = Field::new(W + 40, H + 40, 52);
+        // A subject with its own texture over a still scene, `size` pixels
+        // across, and a wide strip (water, a passing train) across the whole width.
+        let scene = |subject_x: f32, size: (f32, f32), strip: f32, seed: u32| {
+            let px: Vec<f32> = (0..W * H)
                 .map(|k| {
-                    let (x, y) = ((k % w) as f32, (k / w) as f32);
-                    let (sx, sy) = (x - subject_x, y - 60.0);
-                    if (0.0..30.0).contains(&sx) && (0.0..22.0).contains(&sy) {
-                        // The subject carries its own texture.
+                    let (x, y) = ((k % W) as f32, (k / W) as f32);
+                    let (sx, sy) = (x - subject_x, y - 120.0);
+                    if (0.0..size.0).contains(&sx) && (0.0..size.1).contains(&sy) {
                         other.at(sx, sy) * 0.5 + 120.0
+                    } else if (190.0..230.0).contains(&y) {
+                        other.at(x - strip, y)
                     } else {
                         field.at(x, y)
                     }
                 })
                 .collect();
-            Plane { w, h, px: noisy(&px, 1.0, seed) }
+            Plane { w: W, h: H, px: noisy(&px, 2.0, seed) }
         };
-        let got = wobble(&still(90.0, 1), &still(96.0, 2), 0.0, 0.0);
-        println!("picture wobble with a moving subject: {got:.3} px");
-        assert!(got < 0.2, "{got}");
-        let flat = Plane { w, h, px: vec![100; w * h] };
+        for (name, a, b) in [
+            ("small subject", scene(180.0, (60.0, 44.0), 0.0, 1), scene(192.0, (60.0, 44.0), 0.0, 2)),
+            ("large subject on one side", scene(20.0, (200.0, 120.0), 0.0, 3), scene(26.0, (200.0, 120.0), 0.0, 4)),
+            ("strip moving across the width", scene(0.0, (0.0, 0.0), 0.0, 5), scene(0.0, (0.0, 0.0), 3.0, 6)),
+        ] {
+            let got = wobble(&a, &b, 0.0, 0.0);
+            println!("picture wobble with {name}: {got:.3} px");
+            assert!(got < 0.3, "{name}: {got}");
+        }
+        let flat = Plane { w: W, h: H, px: vec![100; W * H] };
         assert_eq!(wobble(&flat, &flat, 0.0, 0.0), 0.0);
         let small = Plane { w: 8, h: 8, px: vec![0; 64] };
         assert_eq!(wobble(&small, &small, 0.0, 0.0), 0.0);
+    }
+
+    #[test]
+    fn picture_wobble_beyond_the_search_is_not_read_as_none() {
+        // Bands displaced by far more than the search reaches: either not
+        // measured, or read from the bands still in reach, never as no wobble.
+        let field = Field::new(W + 80, H + 80, 57);
+        let prev = moved(&field, 0.0, 0.0, &|_| 0.0, 1.0, 1);
+        let cur = moved(&field, 0.0, 0.0, &sine_rows(14.0, 3.0, 0.0), 1.0, 2);
+        let got = wobble(&prev, &cur, 0.0, 0.0);
+        println!("picture wobble far beyond the search: {got:.3}");
+        assert!(!(0.0..=0.7).contains(&got), "{got}");
     }
 
     // White balance cue.
@@ -1316,6 +1493,65 @@ mod tests {
         assert_eq!(temperature_tint(-4.0, 6.0), (5.0, -1.0));
     }
 
+    /// A forest scene: textured ground of grey bark and rock (chroma `cast`)
+    /// and green leaves, under smooth bluish overcast sky (cb +10, cr -4, the
+    /// light, not the camera) that fills the top `sky` share of the frame.
+    fn sky_over_forest(sky: f32, cast: (f32, f32), noise: f32) -> (Vec<u8>, Vec<u8>, Vec<u8>) {
+        let field = Field::new(W + 40, H + 40, 63);
+        let horizon = sky * H as f32;
+        let mut rng = Rng(64);
+        let y: Vec<u8> = (0..W * H)
+            .map(|k| {
+                let (x, row) = ((k % W) as f32, (k / W) as f32);
+                let v = if row < horizon { 150.0 + 35.0 * row / H as f32 + 4.0 * (x / 70.0).sin() } else { 40.0 + 0.6 * field.at(x, row) };
+                (v + noise * rng.normal()).round().clamp(0.0, 255.0) as u8
+            })
+            .collect();
+        let (cw, ch) = (W / 2, H / 2);
+        let mut u = vec![0u8; cw * ch];
+        let mut v = vec![0u8; cw * ch];
+        for k in 0..cw * ch {
+            let (x, row) = ((2 * (k % cw)) as f32, (2 * (k / cw)) as f32);
+            let (cb, cr) = if row < horizon {
+                (10.0, -4.0)
+            } else if field.at(x + 7.0, row + 3.0) > 128.0 {
+                (-35.0, -30.0)
+            } else {
+                cast
+            };
+            u[k] = (128.0 + cb + 0.7 * rng.normal()).round().clamp(0.0, 255.0) as u8;
+            v[k] = (128.0 + cr + 0.7 * rng.normal()).round().clamp(0.0, 255.0) as u8;
+        }
+        (y, u, v)
+    }
+
+    #[test]
+    fn picture_neutral_chroma_leaves_out_grey_sky() {
+        // The same camera setting with more or less sky in the frame reads the
+        // same; before, sky was half the neutral area at 60% sky, and the clip
+        // read about 4 codes cooler than its neighbours.
+        let read = |sky: f32, cast: (f32, f32)| {
+            let (y, u, v) = sky_over_forest(sky, cast, 0.8);
+            neutral_chroma(&y, &u, &v, W, H)
+        };
+        let (cb0, cr0) = read(0.0, (0.0, 0.0)).unwrap();
+        let t0 = temperature_tint(cb0, cr0).0;
+        for sky in [0.3f32, 0.6, 0.85] {
+            let (cb, cr) = read(sky, (0.0, 0.0)).unwrap();
+            let t = temperature_tint(cb, cr).0;
+            println!("picture chroma with {:.0}% sky: cb {cb:.2} cr {cr:.2} temperature {t:+.2} (no sky {t0:+.2})", sky * 100.0);
+            assert!((t - t0).abs() < 1.0, "sky {sky}: {t} against {t0}");
+        }
+        // A real setting change still shows with sky in the frame.
+        let (cb, cr) = read(0.6, (8.0, -6.0)).unwrap();
+        let t = temperature_tint(cb, cr).0;
+        println!("picture chroma with 60% sky and a cool setting: temperature {t:+.2}");
+        assert!(t - t0 < -5.0, "{t}");
+        // A frame of nothing but sky gives no reading.
+        let (y, u, v) = sky_over_forest(1.0, (0.0, 0.0), 0.8);
+        assert_eq!(neutral_chroma(&y, &u, &v, W, H), None);
+    }
+
     #[test]
     fn picture_timing_per_frame() {
         let field = Field::new(W + 40, H + 40, 71);
@@ -1344,7 +1580,7 @@ mod tests {
         let roll = time(&mut || horizon_roll(&a, W, H).0);
         let rows = time(&mut || row_means(&b, W, H)[0]);
         let flick = time(&mut || flicker_strength(&rows_a, &row_means(&b, W, H)));
-        let wob = time(&mut || wobble(&ma.levels[1], &mb.levels[1], 1.0, 0.0));
+        let wob = time(&mut || wobble(&ma.levels[0], &mb.levels[0], 2.0, 0.0));
         let wb = time(&mut || neutral_chroma(&y, &u, &v, W, H).map(|c| c.0).unwrap_or(0.0));
         // For scale, the existing focus measurement on the same frame.
         let lap = time(&mut || crate::metrics::laplacian_variance(&a, W, H) as f32);

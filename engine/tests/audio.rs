@@ -153,3 +153,55 @@ fn audio_stops_when_cancelled() {
     let info = probe(&path).unwrap();
     assert_eq!(analyze_audio(&info, &AtomicBool::new(true)), Err(AnalyzeError::Cancelled));
 }
+
+/// A gusting wind track: brown noise below 150 Hz, gusting differently in each channel, scaled by `level`.
+fn wind_file(name: &str, level: f32) -> PathBuf {
+    let left = format!("anoisesrc=c=brown:r=48000:a=0.9:seed=11:d=8,lowpass=f=150,volume='{level}*(2+8*abs(sin(2*PI*t*0.35)))':eval=frame");
+    let right = format!("anoisesrc=c=brown:r=48000:a=0.9:seed=29:d=8,lowpass=f=150,volume='{level}*(2+8*abs(sin(2*PI*t*0.23+1.3)))':eval=frame");
+    make(
+        name,
+        &[
+            "-f", "lavfi", "-i", "testsrc2=s=320x240:r=25:d=8",
+            "-f", "lavfi", "-i", &left,
+            "-f", "lavfi", "-i", &right,
+            "-filter_complex", "[1][2]amerge=inputs=2[a]", "-map", "0:v", "-map", "[a]",
+            "-c:v", "mpeg4", "-q:v", "5", "-c:a", "pcm_s16le", "-shortest",
+        ],
+    )
+}
+
+#[test]
+fn only_strong_wind_sets_selects_aside() {
+    use selects_engine::analyze::{analyze_clip, AnalyzeOptions};
+    use selects_engine::project::Project;
+    use selects_engine::selection::{AsideReason, SegmentStatus};
+    // Gusts around -18 dBFS, and the same 30 dB down: a light breeze.
+    let strong = wind_file("audio_wind_strong.mov", 0.12);
+    let breeze = wind_file("audio_wind_breeze.mov", 0.004);
+    let mut p = Project::new();
+    for path in [&strong, &breeze] {
+        let id = p.add_clip(&path.to_string_lossy(), probe(path).map_err(|e| e.to_string())).unwrap();
+        let info = p.clip(id).unwrap().info.clone().unwrap();
+        p.clip_mut(id).unwrap().analysis = Some(analyze_clip(&info, &AnalyzeOptions::default(), &AtomicBool::new(false), |_| {}).unwrap());
+    }
+    p.selection.focus_min = 0.0;
+    p.selection.exposure_min = 0.0;
+    p.selection.stability_min = 0.0;
+    p.selection.min_length = 1.0;
+    p.selection.max_per_clip = 0;
+    p.selection.set_aside_sound_problems = true;
+    let sels = p.selections();
+    let strong_segs: Vec<_> = sels[0].segments.iter().filter(|g| g.sound.contains(&AudioIssue::Wind)).collect();
+    let breeze_segs: Vec<_> = sels[1].segments.iter().filter(|g| g.sound.contains(&AudioIssue::Wind)).collect();
+    assert!(!strong_segs.is_empty() && !breeze_segs.is_empty(), "{:?} {:?}", sels[0].segments, sels[1].segments);
+    for g in strong_segs {
+        assert!(g.bad_sound, "{g:?}");
+        assert_eq!((g.status, g.aside), (SegmentStatus::SetAside, Some(AsideReason::Sound)), "{g:?}");
+    }
+    // The breeze is noted on the select but does not set it aside.
+    for g in breeze_segs {
+        assert!(!g.bad_sound, "{g:?}");
+        assert_ne!(g.aside, Some(AsideReason::Sound), "{g:?}");
+    }
+    assert!(sels[1].kept().any(|g| g.sound.contains(&AudioIssue::Wind)));
+}

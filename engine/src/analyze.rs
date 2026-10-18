@@ -18,7 +18,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 /// Bump when measurements change meaning, so cached results are redone.
-pub const ANALYSIS_VERSION: u32 = 5;
+/// Version 6: wobble on the full analysis picture in analysis pixels, flicker
+/// from vertical strips, white balance from textured neutral areas only.
+pub const ANALYSIS_VERSION: u32 = 6;
 pub const DEFAULT_ANALYSIS_WIDTH: u32 = 480;
 pub const DEFAULT_SAMPLE_RATE: f64 = 4.0;
 

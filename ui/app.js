@@ -1304,7 +1304,7 @@ function renderExtraFilters() {
     : `${a.light ? `${plural(a.light, "good stretch is", "good stretches are")} set aside.` : "Nothing is set aside."} Clips with no known light are set aside too${unknown ? ` (${unknown} now)` : ""}.${handNote(a)}`;
   $("set-aside-sound").checked = !!localSel.set_aside_sound_problems;
   $("sound-hint").textContent = localSel.set_aside_sound_problems
-    ? (a.sound ? `${plural(a.sound, "good stretch is", "good stretches are")} set aside for strong wind, clipped sound or a dropout.` : "No select has a sound problem, so nothing is set aside.") + handNote(a)
+    ? (a.sound ? `${plural(a.sound, "good stretch is", "good stretches are")} set aside for strong wind, clipped sound or a dropout; a light breeze is listed but not set aside.` : "No select has a sound problem, so nothing is set aside.") + handNote(a)
     : "Wind noise, clipped sound and dropouts are always listed. Tick this when you will use the sound, to keep only selects where it is clean.";
   $("snap-pauses").checked = localSel.snap_to_pauses !== false;
   const talk = state.talking_clips || 0;
