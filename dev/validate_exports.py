@@ -107,7 +107,7 @@ for c, row in zip(clips3, rows):
     check(frames(c.source_range.duration) == round(float(row["Length (seconds)"]) * rate), f"edl: select {row['Select']} length")
     if row["Clip frame rate"] == row["Timeline frame rate"]:
         src = frames(c.source_range.start_time)
-        check(src == tc_to_frames(row["Source in"]), f"edl: select {row['Select']} source in {src} != {row['Source in']}")
+        check(src == tc_to_frames(row["Source in (timeline rate)"]), f"edl: select {row['Select']} source in {src} != {row['Source in (timeline rate)']}")
 print(f"edl: {len(clips3)} events")
 
 if problems:
