@@ -2,6 +2,8 @@
 
 Footage Selects looks through your raw footage and picks the usable moments for you. It checks every clip for focus, exposure and camera shake, keeps the best stretches, and hands you a timeline you can open in DaVinci Resolve, Premiere Pro or Final Cut Pro.
 
+It also listens to the sound, so selects start and end in a pause when someone talks, and it flags wind noise, distorted sound and dropouts. It checks for crooked horizons, light flicker and drone jello, works out whether a clip was shot in golden hour, blue hour, daylight or at night, and groups clips into scenes by when and where they were recorded. You can keep or drop any stretch by hand, cut a reel to the beat of a song, save a still of every select with a contact sheet, and read a report on how the shoot went.
+
 It understands log footage. S-Log3, V-Log, Canon Log 3, LogC3, F-Log, D-Log, D-Log M, Apple Log, N-Log and HLG are judged in stops through the camera's own curve, so a flat-looking log shot is not marked down, while clipped highlights and underexposure are caught. It can also learn from videos you have already finished: it finds which shots you used and tunes its settings toward your choices.
 
 It is free, it works on Mac (Apple silicon) and Windows, and it runs entirely on your computer. Nothing is uploaded, there is no account, and it works without an internet connection. It uses plain image math, not artificial intelligence.
@@ -16,7 +18,8 @@ On an Apple silicon Mac, 4K footage is analyzed at roughly 8 times real time, so
    2. Exposure: blown highlights, crushed shadows and flat, washed out pictures score low. Log footage is judged differently, as described under Log footage below.
    3. Stability: smooth pans and locked off shots score high, handheld shake scores low.
 3. Keeps the stretches where all three scores are good enough, up to the number you choose per clip.
-4. Exports a timeline with every clip on video track 1 and each select directly above it on video track 2, with a colored marker on each select that lists its three scores.
+4. Moves the start and end of each select into a pause when someone is talking.
+5. Exports a timeline with every clip on video track 1 and each select directly above it on video track 2, with a colored marker on each select that lists its three scores, plus keywords for scene, light, camera movement and problems.
 
 ## Download
 
@@ -90,12 +93,17 @@ The preset you are on is highlighted. Once you move a slider away from it, the a
 6. Keep camera moves whole: when a good stretch is longer than the longest select, it is always cut where the camera is still, never in the middle of a move if that can be avoided. With this ticked, a single pan, push or drone reveal can run up to twice the longest select instead of being cut in two. It is on to start with.
 7. Which selects win: when a clip has more good stretches than it keeps, Focus counts, Exposure counts and Stability counts decide which stay. At 100 each, the three scores count equally. Turn Stability counts down and the sharpest stretches win even if they are a little shaky. These never change the thresholds, only the order.
 
+8. Start and end in a pause when someone talks: when a clip has talking in it, each select starts just before a sentence and ends just after one, moving up to 2 seconds to find a pause, and long takes are split between sentences. It is on to start with. A select that still has to start or end mid-sentence says so.
+
 Under Filters:
 
 1. Camera movement: Any, Still, Moving, Pans or Tilts. With anything but Any, good stretches are cut where the camera starts or stops moving, and stretches that do not match are set aside rather than kept. Set aside stretches show in the clip view with an arrow and the words Set aside. The app reads movement as the picture sliding sideways or up and down, so it can tell a pan left from a pan right and a tilt up from a tilt down. A push-in, pull-out or zoom has little sideways movement and reads as still.
 2. Set aside repeated takes: finds selects that look like a better select in another clip, such as a second take from the same tripod spot, and keeps only the best one. A clip whose select is set aside this way can use its next best stretch instead, within the selects per clip limit. Even with this off, the side panel says how many selects look like another, and the clip view names the clip and moment each one looks like. It only compares different clips, so the parts of one long shot are never called repeats of each other.
 
-Reset to defaults puts every slider back where it started and turns both filters off.
+3. Light: Any, Golden hour, Blue hour, Daylight or Night. Only footage shot in that light is kept; the rest, and clips whose light is not known, are set aside. See Light, scenes and places below.
+4. Set aside selects with sound problems: keeps only selects whose sound is clean. Wind noise, distorted (clipped) sound and dropouts are always listed whether or not this is ticked; tick it when you will use the sound.
+
+Reset to defaults puts every slider back where it started and turns the filters off.
 
 Frames scored per second, under Analysis, is the one setting that means analyzing everything again. More frames per second catches shorter moments but takes longer. The app asks before it starts.
 
@@ -128,6 +136,55 @@ The frame viewer shows the clip itself:
 The line under the clip's name also says how it was read: by the graphics chip, by other video hardware, or by the processor alone (software, which is slower). If hardware decoding was asked for but the computer could not do it for this clip's format, it says so.
 
 Click Back to all clips to return to the list.
+
+## Keep or drop by hand
+
+You have the final say on any stretch. In a clip's view, hold a moment (click a graph, or use the arrow keys), then:
+
+1. Keep this, or the K key: keeps the stretch under the held moment exactly as it is, whatever the sliders and filters say. It does not count toward Selects per clip.
+2. Drop this, or the X key: leaves it out. The clip's next best stretch can take its place.
+3. The stars, or the keys 1 to 5: keeps the stretch and gives it stars. Starred selects rank first in a reel, are favorites in Final Cut Pro and marked Good in Premiere Pro.
+4. Go back to the settings' choice, or the 0 key: removes your call.
+
+Your call covers the stretch under the held moment. Inside a long dropped stretch, it covers a piece as long as Longest select around the held moment. Kept stretches are outlined in navy on the strip above the graphs, dropped ones in red, and the table of stretches has a Your call column. Calls are saved with the project and survive slider changes.
+
+Every call also teaches the app your taste: Fit settings to my edits, under Learn from your edits, uses kept stretches as examples to keep and dropped ones as examples to leave out, with or without finished videos.
+
+## Sound
+
+Each clip's sound is read alongside its picture. The clip view says whether someone talks and for how much of the clip, how loud the sound is against the background, and lists problems:
+
+1. Wind noise: rumble below about 150 Hz that comes and goes. With a stereo microphone the app also checks that the two sides do not move together, which tells wind from deep music.
+2. Sound clipped: the recording level was too high and the sound distorts.
+3. Sound drops out: the sound cuts to silence and comes back, usually a wireless mic losing its link or a loose cable.
+
+A lane under the clip's graphs shows where someone talks. The list shows a Talking tag and a pill for each problem. Talking is found from loudness and the rise and fall of syllables, not from understanding words, so a rhythmic vocal in music can read as talking and a whisper can be missed.
+
+## Light, scenes and places
+
+The app works out when and where each clip was recorded, from the camera's own files (Sony's XML, DJI's captions), a phone's tags, or the camera's clock. From the time and place it works out how high the sun was at the middle of the clip:
+
+1. Golden hour: the sun from 4 degrees below to 6 degrees above the horizon.
+2. Blue hour: 4 to 8 degrees below.
+3. Daylight, and Harsh midday when the sun is more than 50 degrees up.
+4. Night: more than 8 degrees below.
+
+Clips are also grouped into scenes, such as "Day 1, evening" or "Day 2, morning, place 2": a gap of more than 45 minutes, or a move of more than 1.5 km, starts a new scene. Clips without a recording time are grouped by folder. The scene shows under each clip's name, rides along into your editor, and is used to compare white balance: a clip that is clearly warmer, cooler, greener or more magenta than the rest of its scene says so.
+
+Under Places and time, on the right:
+
+1. Where you shot: a latitude and longitude, for example 38.7223, -9.1393, for clips that do not record a place. You can copy them from a map app. Clips without a place first borrow one from a clip recorded within three hours.
+2. Camera clock time zone: many cameras record their clock time without saying which time zone it is in. Work it out uses the time zone other clips in the project state (phones do), or else the place's longitude, which can be an hour out. Choosing it is exact.
+
+## Picture checks
+
+Besides focus, exposure and stability, every select is checked for:
+
+1. Crooked horizon: the picture is tilted 1 degree or more off level, judged from straight lines in the picture. The clip view says which way and how much to rotate it. Pictures without clear lines (foliage, water, open sky) are not judged.
+2. Light flicker: dark bands rolling through the picture from lights on mains power. A shutter of 1/50 or 1/100 avoids it where the mains runs at 50 Hz, 1/60 or 1/120 where it runs at 60 Hz.
+3. Jello: the picture wobbles within the frame, typical of drone propeller vibration or a loose mount.
+
+These never drop a select on their own. They show as pills in the list, notes in the table of stretches, notes on the markers, and keywords in your editor.
 
 ## Log footage
 
@@ -168,7 +225,7 @@ Click Save project to save a `.selects` file. It holds every score, so when you 
 
 If a clip has changed since it was analyzed, it is marked as changed and analyzed again when you click Analyze footage.
 
-Projects saved by version 0.1 open normally, but each clip needs analyzing once more, because version 0.2 measures more about each frame (what log exposure and finished-video tracing need). Click Analyze footage after opening one.
+Projects saved by earlier versions open normally, but each clip needs analyzing once more, because this version measures more about each frame and reads the sound (what horizons, flicker, jello, white balance and speech-aware cuts need). Click Analyze footage after opening one.
 
 ## Export the timeline
 
@@ -177,7 +234,9 @@ Choose your settings under Export:
 1. Timeline name: what the timeline will be called in your editor.
 2. Timeline frame rate: starts as the most common frame rate in your footage. Pick another if your project uses a different one.
 3. Drop frame timecode: appears for 29.97 and 59.94. Use it if your project uses drop frame timecode. The app turns it on when most of your 29.97 or 59.94 footage was recorded that way.
-4. Layout: either every full clip on track 1 with each select above it on track 2, or only the selects back to back on track 2.
+4. Extra time around each select: adds up to 3 seconds of footage before and after each select, for transitions and speed ramps. The marker still sits where the select starts, and two selects from the same clip never overlap.
+5. Layout: either every full clip on track 1 with each select above it on track 2, or only the selects back to back on track 2.
+6. Also save a still of every select and a contact sheet: see Stills and contact sheet below.
 
 Click Export timeline, choose where to save and a name, and four files are written side by side. The save window starts in the same place as for projects: Documents, or the saved project's folder. The four files are:
 
@@ -187,6 +246,35 @@ Click Export timeline, choose where to save and a name, and four files are writt
 4. `.csv`, a spreadsheet of every select that opens in Excel, Numbers or Google Sheets
 
 The spreadsheet gives each select's source timecode twice. The timeline rate columns match the `.edl`. The clip rate columns match what your editor shows for the clip itself, so a 120 fps clip can show frame numbers up to 119 there. Both point to the same moment.
+
+Each select also carries keywords: its strength, stars, whether you kept it by hand, its camera movement, light, scene, Talking when someone talks, and any problems. In Final Cut Pro they become keyword collections in the event, so you can open "Golden hour" or "Pan" as a collection. In Premiere Pro they fill the Log Note column, the scene fills the Scene column, and strong, starred and hand-kept selects are marked Good. DaVinci Resolve reads the same fields into each clip's metadata. The spreadsheet has columns for all of them.
+
+## Stills and contact sheet
+
+Click Save stills and contact sheet only, or tick Also save a still of every select before exporting, and the app writes:
+
+1. A full-size JPEG still of the best frame of every select (the sharpest, best exposed, steadiest moment inside it).
+2. A small copy of each, in a folder called small.
+3. Contact sheet.html: every still on one page, grouped by scene, with each select's clip, timecode, scores, keywords and problems. Open it in a browser; print it to save a PDF. Click a picture to open the full-size still.
+
+They go in a folder named after the timeline, followed by "stills". Log footage is saved as recorded, so it looks flat until graded.
+
+## Make a reel
+
+Under Make a reel, on the right, click Choose a song and pick a music file. The app finds its tempo and beats, then cuts your selects to them:
+
+1. Cut: how often to cut. About 2 seconds picks the number of beats closest to two seconds; or cut every beat, every 2 beats, every bar or every 2 bars. Cuts start on the first bar.
+2. Length: the whole song, or 15, 30, 60 or 90 seconds.
+3. Order: As shot keeps the moments in the order they were recorded, which usually tells the day as it happened. Best first puts the strongest selects first.
+4. Shape: 16:9, 9:16 for phones, or 1:1. Vertical and square reels are cut from the centre of the picture; check the framing in your editor.
+
+The best selects are chosen first (stars and selects kept by hand count extra), then placed so that two shots in a row never come from the same clip if it can be avoided, alternating still and moving shots where it can. Within a select, each shot takes the stretch with the best scores. See the shot list shows every shot before you export. Export reel timeline writes the same four files as the selects timeline, with the song on the audio track and the shots back to back above it, silent so you only hear the song.
+
+The beat is found with plain signal arithmetic on the song's loudness and bass, so music without a steady beat (rubato piano, ambient) gives cuts that may land a little off; the app says so.
+
+## Shoot report
+
+Click Shoot report at the top. It goes through the analyzed footage and lists what it found, each with what to do about it: how much became selects; whether a slower shutter gave steadier footage; which camera was steadiest; clips with clipped highlights and whether they were already at low ISO (meaning an ND filter would have helped); dark footage; which light made it into the selects most often; crooked horizons and whether they all lean one way (pointing at the gimbal); flicker; jello; a too-fast shutter; wind, clipped sound and dropouts; white balance differences; repeated takes; and soft footage. A finding is only made when enough clips back it up. Save as a page writes it as a web page to keep or share.
 
 ## Import into DaVinci Resolve
 
@@ -236,13 +324,13 @@ A check sends GitHub a request for one small file that describes the newest vers
 2. Clear blue sky, plain walls and other shots with little detail score lower on focus even when sharp. Look at the clip's graph before writing it off.
 3. Intentional camera moves, like a slow pan or a push in, count as stable. Fast whip pans count as a little less stable.
 4. Night and other low-light footage: a low stability score means the camera really moved. In very dark, flat, noisy shots, earlier versions sometimes read small camera moves as no movement at all, which made gentle handheld footage look shakier than it was; this is fixed, and projects scored before the fix are analyzed again when you open them. Dark scenes score lower on exposure, because the app cannot tell a night scene from an underexposed day scene; lower Exposure at least for a night shoot. Sensor noise also reads as fine detail, so night shots can score higher on focus than they deserve. Check focus by eye on night clips.
-5. Footage Selects judges picture quality, not content. It cannot tell a great moment from a dull one, so treat its selects as a first pass.
+5. Footage Selects judges picture and sound quality, not content. It cannot tell a great moment from a dull one, so treat its selects as a first pass, and use Keep this and Drop this to make your own calls.
 
 ## Good to know
 
-1. Nothing leaves your computer. Analysis, selection, export and reading finished videos make no network connections at all. The only time the app goes online is when you check for updates, as described above.
+1. Nothing leaves your computer. Analysis, selection, export, reels, stills and reading finished videos make no network connections at all. The light is worked out with the sun's position equations on your computer; places are never looked up online. The only time the app goes online is when you check for updates, as described above.
 2. Your footage, the camera's files beside it and your finished videos are only read, never changed.
-3. Sound is not analyzed. In the exported timeline the full clips carry their sound; the selects above them are picture only, so you do not hear everything twice.
+3. Sound is measured for talking and problems, never for what is said. In the exported timeline the full clips carry their sound; the selects above them are picture only, so you do not hear everything twice.
 4. Camera RAW formats such as Blackmagic RAW and RED R3D cannot be read. Use proxies or transcodes of that footage instead; Footage Selects handles proxies well.
 
 ## Landing page and waitlist

@@ -130,6 +130,7 @@ fn worker(app: AppHandle) {
                 sample_rate: project.sample_rate,
                 width: project.analysis_width,
                 hardware_decode: true,
+                audio: true,
             };
             let info = project.clip(id).and_then(|c| c.info.clone());
             if let (Some(info), Some(clip)) = (info.as_ref(), project.clip_mut(id)) {

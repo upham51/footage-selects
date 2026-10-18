@@ -122,6 +122,28 @@ pub fn used_moments(project: &Project) -> Vec<UsedMoment> {
     out
 }
 
+/// `UsedMoment::video` for a stretch kept by hand rather than used in a finished video.
+pub const HAND_KEEP: usize = usize::MAX;
+/// `UsedMoment::video` for a stretch dropped by hand: an example of what not to keep.
+pub const HAND_DROP: usize = usize::MAX - 1;
+
+/// Calls made by hand, as moments: kept stretches teach what to keep,
+/// dropped ones what to leave out.
+pub fn hand_moments(project: &Project) -> Vec<UsedMoment> {
+    let mut out = Vec::new();
+    for c in &project.clips {
+        for m in &c.marks {
+            out.push(UsedMoment {
+                video: if m.call == crate::selection::Call::Keep { HAND_KEEP } else { HAND_DROP },
+                clip_id: c.id,
+                start: m.start,
+                end: m.end,
+            });
+        }
+    }
+    out
+}
+
 /// Why a used moment is not among the selects.
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, Hash)]
 #[serde(rename_all = "snake_case")]
@@ -163,6 +185,16 @@ pub struct TasteReport {
     pub misses: Vec<(MissReason, usize)>,
     pub selects_seconds: f64,
     pub footage_seconds: f64,
+    /// Stretches kept by hand, and how many of them the settings alone would keep.
+    #[serde(default)]
+    pub hand: usize,
+    #[serde(default)]
+    pub hand_kept: usize,
+    /// Stretches dropped by hand, and how many of them the settings alone would still keep.
+    #[serde(default)]
+    pub dropped: usize,
+    #[serde(default)]
+    pub dropped_kept: usize,
 }
 
 /// A used moment counts as kept when selects cover at least half of it, or
@@ -233,9 +265,21 @@ fn evaluate(p: &Prepared, moments: &[UsedMoment], settings: &SelectionSettings) 
         let sel = select_clip(scores, *until, settings);
         r.selects_seconds += sel.kept_seconds();
         for m in moments.iter().filter(|m| m.clip_id == *id) {
+            if m.video == HAND_DROP {
+                r.dropped += 1;
+                if covered(&sel, m.start, m.end) {
+                    r.dropped_kept += 1;
+                }
+                continue;
+            }
             r.used += 1;
             clips_used.insert(*id);
-            if covered(&sel, m.start, m.end) {
+            let hit = covered(&sel, m.start, m.end);
+            if m.video == HAND_KEEP {
+                r.hand += 1;
+                r.hand_kept += hit as usize;
+            }
+            if hit {
                 r.kept += 1;
             } else {
                 let why = miss_reason(&sel, m.start, m.end);
@@ -248,7 +292,7 @@ fn evaluate(p: &Prepared, moments: &[UsedMoment], settings: &SelectionSettings) 
     }
     // Moments on clips without scores.
     let scored: std::collections::HashSet<u64> = p.clips.iter().map(|c| c.0).collect();
-    let unscored = moments.iter().filter(|m| !scored.contains(&m.clip_id)).count();
+    let unscored = moments.iter().filter(|m| m.video != HAND_DROP && !scored.contains(&m.clip_id)).count();
     if unscored > 0 {
         r.used += unscored;
         misses.push((MissReason::NotAnalyzed, unscored));
@@ -264,6 +308,11 @@ pub fn report(project: &Project) -> TasteReport {
     let p = prepare(project);
     let mut r = evaluate(&p, &used_moments(project), &project.selection);
     r.videos = project.finished_videos.len();
+    let hand = evaluate(&p, &hand_moments(project), &project.selection);
+    r.hand = hand.hand;
+    r.hand_kept = hand.hand_kept;
+    r.dropped = hand.dropped;
+    r.dropped_kept = hand.dropped_kept;
     r
 }
 
@@ -271,12 +320,14 @@ pub fn report(project: &Project) -> TasteReport {
 /// more of the footage. Adding a tenth of the footage to the selects has to
 /// win back at least a twentieth of the used shots.
 fn objective(r: &TasteReport) -> f64 {
-    if r.used == 0 {
+    if r.used == 0 && r.dropped == 0 {
         return 0.0;
     }
-    let recall = r.kept as f64 / r.used as f64;
+    let recall = if r.used > 0 { r.kept as f64 / r.used as f64 } else { 0.0 };
     let share = if r.footage_seconds > 0.0 { r.selects_seconds / r.footage_seconds } else { 0.0 };
-    recall - 0.5 * share
+    // Keeping what was dropped by hand counts against the settings.
+    let unwanted = if r.dropped > 0 { r.dropped_kept as f64 / r.dropped as f64 } else { 0.0 };
+    recall - 0.5 * share - 0.5 * unwanted
 }
 
 const SCORE_STEPS: [f32; 15] = [0.1, 0.15, 0.2, 0.25, 0.3, 0.35, 0.4, 0.45, 0.5, 0.55, 0.6, 0.65, 0.7, 0.75, 0.8];
@@ -338,8 +389,9 @@ pub struct FitResult {
 
 /// Find settings that keep more of the moments this person used.
 pub fn fit(project: &Project) -> Option<FitResult> {
-    let moments = used_moments(project);
-    if moments.is_empty() {
+    let mut moments = used_moments(project);
+    moments.extend(hand_moments(project));
+    if moments.iter().all(|m| m.video == HAND_DROP) {
         return None;
     }
     let p = prepare(project);
@@ -350,7 +402,7 @@ pub fn fit(project: &Project) -> Option<FitResult> {
     after.videos = before.videos;
 
     let videos: Vec<usize> = {
-        let mut v: Vec<usize> = moments.iter().map(|m| m.video).collect();
+        let mut v: Vec<usize> = moments.iter().map(|m| m.video).filter(|&v| v < HAND_DROP).collect();
         v.sort_unstable();
         v.dedup();
         v
@@ -360,6 +412,7 @@ pub fn fit(project: &Project) -> Option<FitResult> {
         let (mut sum, mut sum_before, mut n) = (0.0, 0.0, 0.0);
         for &v in &videos {
             let train: Vec<UsedMoment> = moments.iter().filter(|m| m.video != v).cloned().collect();
+            // Hand calls always train; only finished videos are held out.
             let test: Vec<UsedMoment> = moments.iter().filter(|m| m.video == v).cloned().collect();
             let s = search(&p, &train, &project.selection);
             let r = evaluate(&p, &test, &s);

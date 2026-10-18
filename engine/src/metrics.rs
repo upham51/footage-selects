@@ -48,6 +48,21 @@ pub struct FrameMetrics {
     pub top: f32,
     /// Picture fingerprints for matching finished videos back to this clip.
     pub fp: [u64; 3],
+    /// How far the picture is rotated from level, in degrees; positive means
+    /// rotated clockwise. Only meaningful when `roll_conf` is high enough.
+    pub roll: f32,
+    pub roll_conf: f32,
+    /// Light flicker banding against the previous sample, as a share of
+    /// brightness. Negative when it could not be measured (the camera moved).
+    pub flicker: f32,
+    /// Rolling-shutter wobble against the previous sample, in pixels of the
+    /// half-size picture. Negative when it could not be measured.
+    pub wobble: f32,
+    /// Average chroma of near-neutral pixels (Cb and Cr minus 128), for white
+    /// balance. Only meaningful when `wb_ok`.
+    pub cb: f32,
+    pub cr: f32,
+    pub wb_ok: bool,
 }
 
 /// Shares of pixels at which `FrameMetrics::ladder` records the luma.
@@ -169,6 +184,8 @@ impl Plane {
 pub struct MotionFrame {
     /// Level 0 is the analysis picture; each next level is half the size.
     pub levels: Vec<Plane>,
+    /// Mean of each row of the analysis picture, for flicker.
+    pub rows: Vec<f32>,
 }
 
 /// Coarsest level used for the search (1/8 of 480 is 60 pixels wide).
@@ -190,7 +207,7 @@ pub fn motion_frame(gray: &[u8], w: usize, h: usize) -> MotionFrame {
         let next = last.half();
         levels.push(next);
     }
-    MotionFrame { levels }
+    MotionFrame { levels, rows: crate::picture::row_means(gray, w, h) }
 }
 
 /// Mean absolute difference between `cur` and `prev` displaced by (sx, sy),
@@ -398,6 +415,32 @@ pub fn estimate_shift(prev: &MotionFrame, cur: &MotionFrame) -> (f32, f32, bool)
     (sx as f32 + fx, sy as f32 + fy, true)
 }
 
+/// Largest shift between samples, in analysis pixels, at which the camera
+/// counts as still enough to compare rows for flicker.
+pub const FLICKER_STILL_SHIFT: f32 = 1.0;
+/// Largest shift, in analysis pixels, at which wobble is still measured: the
+/// band search covers a few pixels around the global shift at half size.
+pub const WOBBLE_MAX_SHIFT: f32 = 60.0;
+
+/// Measure one frame from its full-range YUV 4:2:0 planes: everything
+/// `measure_frame` does on the luma, plus white balance from the chroma.
+pub fn measure_frame_yuv(
+    y: &[u8],
+    u: &[u8],
+    v: &[u8],
+    w: usize,
+    h: usize,
+    prev: Option<&MotionFrame>,
+) -> (FrameMetrics, MotionFrame) {
+    let (mut m, proj) = measure_frame(y, w, h, prev);
+    if let Some((cb, cr)) = crate::picture::neutral_chroma(y, u, v, w, h) {
+        m.cb = cb;
+        m.cr = cr;
+        m.wb_ok = true;
+    }
+    (m, proj)
+}
+
 /// Measure one frame. `prev` holds the previous sample's pyramid, if any.
 pub fn measure_frame(
     gray: &[u8],
@@ -412,6 +455,17 @@ pub fn measure_frame(
         Some(p) => estimate_shift(p, &proj),
         None => (0.0, 0.0, true),
     };
+    let (roll, roll_conf) = crate::picture::horizon_roll(gray, w, h);
+    let mut flicker = -1.0;
+    let mut wobble = -1.0;
+    if let Some(p) = prev {
+        if motion_ok && dx.abs() < FLICKER_STILL_SHIFT && dy.abs() < FLICKER_STILL_SHIFT && p.rows.len() == proj.rows.len() {
+            flicker = crate::picture::flicker_strength(&p.rows, &proj.rows);
+        }
+        if motion_ok && dx.abs() < WOBBLE_MAX_SHIFT && dy.abs() < WOBBLE_MAX_SHIFT && p.levels.len() > 1 && proj.levels.len() > 1 {
+            wobble = crate::picture::wobble(&p.levels[1], &proj.levels[1], dx / 2.0, dy / 2.0);
+        }
+    }
     (
         FrameMetrics {
             lap,
@@ -427,6 +481,13 @@ pub fn measure_frame(
             vmax: e.vmax,
             top: e.top,
             fp: crate::fingerprint::frame_hashes(gray, w, h),
+            roll,
+            roll_conf,
+            flicker,
+            wobble,
+            cb: 0.0,
+            cr: 0.0,
+            wb_ok: false,
         },
         proj,
     )

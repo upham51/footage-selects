@@ -35,6 +35,7 @@ fn info(name: &str, duration: f64) -> ClipInfo {
         color_transfer: String::new(),
         detected_profile: None,
         camera: None,
+        tags: Default::default(),
     }
 }
 

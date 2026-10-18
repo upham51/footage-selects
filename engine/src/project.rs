@@ -9,7 +9,7 @@ use crate::probe::{file_stamp, ClipInfo};
 use crate::rate::Rate;
 use crate::scores::{score_clip_with, ScoreSeries, ToneContext};
 use crate::tone::{looks_like_log, ToneProfile};
-use crate::selection::{apply_cap, select_candidates, AsideReason, ClipSelection, SegmentStatus, SelectionSettings, SimilarTo, Summary};
+use crate::selection::{apply_cap, select_candidates_with, AsideReason, ClipExtras, ClipSelection, SegmentStatus, SelectionSettings, SimilarTo, Summary};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
@@ -37,6 +37,10 @@ pub struct ExportSettings {
     pub layout: TimelineLayout,
     pub timeline_name: String,
     pub start_timecode: String,
+    /// Extra seconds of footage before and after each select, for transitions.
+    pub handles: f32,
+    /// Also write a still of the best frame of every select and a contact sheet.
+    pub stills: bool,
 }
 
 impl Default for ExportSettings {
@@ -47,6 +51,8 @@ impl Default for ExportSettings {
             layout: TimelineLayout::FullClipsBelow,
             timeline_name: "Selects".into(),
             start_timecode: "01:00:00:00".into(),
+            handles: 0.0,
+            stills: false,
         }
     }
 }
@@ -62,6 +68,9 @@ pub struct ProjectClip {
     /// A profile chosen by hand for this clip, overriding everything else.
     #[serde(default)]
     pub profile: Option<ToneProfile>,
+    /// Calls made by hand: stretches kept (with stars) or dropped.
+    #[serde(default)]
+    pub marks: Vec<crate::selection::Mark>,
 }
 
 /// Where a clip's picture profile came from.
@@ -214,9 +223,33 @@ impl ProjectClip {
 
     fn candidates(&self, settings: &SelectionSettings, fallback: Option<ToneProfile>) -> ClipSelection {
         match self.scores(fallback) {
-            Some(s) => select_candidates(&s, self.measured_until(), settings),
+            Some(s) => select_candidates_with(&s, self.measured_until(), settings, &self.extras()),
             None => ClipSelection::default(),
         }
+    }
+
+    /// Everything besides the scores that selection uses for this clip.
+    pub fn extras(&self) -> ClipExtras<'_> {
+        let a = self.analysis.as_ref();
+        ClipExtras {
+            frames: a.map(|a| &a.frames),
+            sound: a.and_then(|a| a.sound.as_ref()),
+            audio: a.and_then(|a| a.audio.as_ref()),
+            marks: &self.marks,
+        }
+    }
+
+    /// Selection for this clip without its calls made by hand, as the
+    /// settings alone would choose.
+    pub fn select_automatic(&self, settings: &SelectionSettings, fallback: Option<ToneProfile>) -> ClipSelection {
+        let mut x = self.extras();
+        x.marks = &[];
+        let mut sel = match self.scores(fallback) {
+            Some(s) => select_candidates_with(&s, self.measured_until(), settings, &x),
+            None => ClipSelection::default(),
+        };
+        apply_cap(&mut sel.segments, settings.max_per_clip);
+        sel
     }
 
     /// Whole-picture fingerprints at a quarter, half and three quarters of
@@ -264,6 +297,10 @@ pub struct Project {
     pub fallback_profile: Option<ToneProfile>,
     /// Finished videos traced back to these clips, to learn what gets used.
     pub finished_videos: Vec<crate::taste::FinishedVideo>,
+    /// Where the footage was shot and the cameras' clock zone, for clips that do not say.
+    pub places: crate::scene::PlaceSettings,
+    /// The music reel being put together, if any.
+    pub reel: crate::reel::ReelSettings,
 }
 
 impl Default for Project {
@@ -279,6 +316,8 @@ impl Default for Project {
             next_id: 1,
             fallback_profile: None,
             finished_videos: Vec::new(),
+            places: Default::default(),
+            reel: Default::default(),
         }
     }
 }
@@ -336,6 +375,7 @@ impl Project {
             error,
             analysis: None,
             profile: None,
+            marks: Vec::new(),
         });
         Some(id)
     }
@@ -373,15 +413,35 @@ impl Project {
     /// and with `set_aside_repeats` it is set aside, so the better take wins
     /// and the clip's next best segment can take its place under the limit.
     pub fn selections(&self) -> Vec<ClipSelection> {
+        let scenes = if self.selection.light != crate::selection::LightFilter::Any { Some(crate::scene::resolve(self)) } else { None };
+        self.selections_with(scenes.as_deref())
+    }
+
+    /// `selections` with the clips' scenes already worked out (needed for the light filter).
+    pub fn selections_with(&self, scenes: Option<&[crate::scene::ClipScene]>) -> Vec<ClipSelection> {
         let s = &self.selection;
         let mut sels: Vec<ClipSelection> = self.clips.iter().map(|c| c.candidates(s, self.fallback_profile)).collect();
+        // Filters that look beyond the picture. Stretches kept by hand are never set aside.
+        for (ci, sel) in sels.iter_mut().enumerate() {
+            let light = scenes.and_then(|sc| sc.get(ci)).and_then(|sc| sc.light);
+            for g in sel.segments.iter_mut().filter(|g| g.status == SegmentStatus::Kept && !g.manual) {
+                if s.light != crate::selection::LightFilter::Any && !s.light.allows(light) {
+                    g.status = SegmentStatus::SetAside;
+                    g.aside = Some(AsideReason::Light);
+                } else if s.set_aside_sound_problems && !g.sound.is_empty() {
+                    g.status = SegmentStatus::SetAside;
+                    g.aside = Some(AsideReason::Sound);
+                }
+            }
+        }
         // (clip index, segment index, score, fingerprints)
         let mut cands: Vec<(usize, usize, f32, [u64; 3])> = Vec::new();
         for (ci, (c, sel)) in self.clips.iter().zip(&sels).enumerate() {
             for (si, g) in sel.segments.iter().enumerate() {
                 if g.status == SegmentStatus::Kept {
                     if let Some(fp) = c.fingerprints(g.start, g.end) {
-                        cands.push((ci, si, g.score, fp));
+                        // Stretches kept by hand come first, so they are never the repeat.
+                        cands.push((ci, si, if g.manual { 10.0 + g.score } else { g.score }, fp));
                     }
                 }
             }
@@ -397,6 +457,7 @@ impl Project {
                 .min_by(|x, y| x.1.partial_cmp(&y.1).unwrap_or(std::cmp::Ordering::Equal))
                 .map(|(a, _)| (a.0, a.1));
             match twin {
+                Some(_) if sels[ci].segments[si].manual => accepted.push((ci, si, fp)),
                 Some((tc, ts)) => {
                     let other = &sels[tc].segments[ts];
                     let similar = SimilarTo { clip: self.clips[tc].id, start: other.start, end: other.end };
@@ -418,7 +479,13 @@ impl Project {
 
     /// Selection for every clip, in project order, plus the summary line.
     pub fn select_all(&self) -> (Vec<ClipSelection>, Summary) {
-        let sels = self.selections();
+        let scenes = crate::scene::resolve(self);
+        self.select_all_with(&scenes)
+    }
+
+    /// `select_all` with the clips' scenes already worked out.
+    pub fn select_all_with(&self, scenes: &[crate::scene::ClipScene]) -> (Vec<ClipSelection>, Summary) {
+        let sels = self.selections_with(Some(scenes));
         let mut out = Vec::with_capacity(self.clips.len());
         let mut sum = Summary {
             clips_total: self.clips.len(),

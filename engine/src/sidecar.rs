@@ -32,11 +32,15 @@ pub struct CameraNotes {
     pub longitude: Option<f64>,
     /// Height above the take-off point in metres, the highest in the clip.
     pub max_height: Option<f32>,
+    /// When recording started, as the camera wrote it (Sony with its time
+    /// zone, DJI as the drone's own clock time).
+    pub recorded: Option<String>,
 }
 
 impl CameraNotes {
     pub fn is_empty(&self) -> bool {
-        self.camera.is_none()
+        self.recorded.is_none()
+            && self.camera.is_none()
             && self.picture_profile.is_none()
             && self.iso.is_none()
             && self.shutter.is_none()
@@ -178,7 +182,24 @@ pub fn parse_sony_xml(text: &str) -> CameraNotes {
             n.picture_profile = attr(tag, "value");
         }
     }
+    for tag in tags(text, "CreationDate") {
+        if let Some(v) = attr(tag, "value") {
+            n.recorded = Some(v);
+        }
+    }
     n
+}
+
+/// A "2024-05-02 18:01:23" style date and time at the start of a caption line.
+fn caption_datetime(line: &str) -> Option<String> {
+    let l = line.trim().trim_start_matches(|c: char| !c.is_ascii_digit());
+    let b = l.as_bytes();
+    if b.len() >= 19 && b[4] == b'-' && b[7] == b'-' && (b[10] == b' ' || b[10] == b'T') && b[13] == b':' && b[16] == b':' {
+        if l[..19].bytes().enumerate().all(|(i, c)| matches!(i, 4 | 7 | 10 | 13 | 16) || c.is_ascii_digit()) {
+            return Some(l[..19].to_string());
+        }
+    }
+    None
 }
 
 fn median_f64(mut v: Vec<f64>) -> Option<f64> {
@@ -271,6 +292,9 @@ pub fn parse_dji_srt(text: &str) -> CameraNotes {
         if mode.is_none() {
             mode = value_after(line, &["color_md"]);
         }
+        if n.recorded.is_none() {
+            n.recorded = caption_datetime(line);
+        }
     }
     n.iso = median_f64(iso).map(|v| v as f32);
     n.shutter = median_f64(shutter);
@@ -282,7 +306,8 @@ pub fn parse_dji_srt(text: &str) -> CameraNotes {
     n.longitude = median_f64(lon);
     n.max_height = height;
     n.picture_profile = mode;
-    if !n.is_empty() {
+    let any = n.iso.is_some() || n.shutter.is_some() || n.latitude.is_some() || n.picture_profile.is_some();
+    if any {
         n.camera = Some("DJI".into());
     }
     n
