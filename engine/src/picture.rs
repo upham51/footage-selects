@@ -703,7 +703,7 @@ fn median_of(v: &mut [f64]) -> f64 {
     let mid = v.len() / 2;
     if v.is_empty() {
         0.0
-    } else if v.len() % 2 == 0 {
+    } else if v.len().is_multiple_of(2) {
         0.5 * (v[mid - 1] + v[mid])
     } else {
         v[mid]
@@ -1442,7 +1442,7 @@ mod tests {
         let cur = moved(&field, 0.0, 0.0, &sine_rows(14.0, 3.0, 0.0), 1.0, 2);
         let got = wobble(&prev, &cur, 0.0, 0.0);
         println!("picture wobble far beyond the search: {got:.3}");
-        assert!(got < 0.0 || got > 0.7, "{got}");
+        assert!(!(0.0..=0.7).contains(&got), "{got}");
     }
 
     // White balance cue.

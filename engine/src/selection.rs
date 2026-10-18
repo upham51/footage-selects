@@ -51,7 +51,8 @@ pub struct SelectionSettings {
     pub set_aside_repeats: bool,
     /// Start and end selects in a pause when someone is talking.
     pub snap_to_pauses: bool,
-    /// Set aside selects whose sound has wind noise, clipping or a dropout.
+    /// Set aside selects whose sound is clipped, drops out or has strong wind
+    /// (`Segment::bad_sound`); a light breeze is only noted.
     pub set_aside_sound_problems: bool,
     /// Which light a select must be in (from the sun's height when and where it was recorded).
     pub light: LightFilter,
@@ -316,6 +317,11 @@ pub struct Segment {
     /// Sound problems inside the segment.
     #[serde(default)]
     pub sound: Vec<crate::audio::AudioIssue>,
+    /// The sound is bad enough to set the segment aside when people will use
+    /// it: clipping, a dropout or strong wind (`audio::bad_sound_in`). A light
+    /// breeze is listed in `sound` without this.
+    #[serde(default)]
+    pub bad_sound: bool,
 }
 
 impl Segment {
@@ -534,6 +540,7 @@ fn make_segment(sm: &ScoreSeries, bounds: &[f64], start: f64, end: f64, status: 
         speech_cuts: 0,
         snapped: 0,
         sound: Vec::new(),
+        bad_sound: false,
     }
 }
 
@@ -952,6 +959,7 @@ fn add_checks(sm: &ScoreSeries, bounds: &[f64], g: &mut Segment, x: &ClipExtras)
     }
     if let Some(t) = x.audio {
         g.sound = crate::audio::issues_in(t, g.start, g.end);
+        g.bad_sound = !g.sound.is_empty() && crate::audio::bad_sound_in(t, g.start, g.end);
         if x.sound.map(|sd| sd.summary.has_speech).unwrap_or(false) {
             g.talk = crate::audio::talk_share_in(t, g.start, g.end);
         }

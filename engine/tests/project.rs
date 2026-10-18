@@ -209,3 +209,24 @@ fn selection_over_two_hours_of_footage_is_instant() {
     assert_eq!(total, 170 * runs);
     assert!(per_run < 0.1, "selection took {per_run} s");
 }
+
+#[test]
+fn reopening_judges_the_stored_sound_again() {
+    // A project saved when the sound was judged differently: the stored
+    // summary says someone talks over wind. Reopening works it out again from
+    // the stored measurements, without analysing anything.
+    let f = common::footage();
+    let mut p = analysed_project(&[&f.with_audio_25p]);
+    let fresh = p.clips[0].analysis.as_ref().unwrap().sound.clone().unwrap();
+    {
+        let a = p.clips[0].analysis.as_mut().unwrap();
+        assert!(a.audio.is_some());
+        let s = a.sound.as_mut().unwrap();
+        s.summary.has_speech = true;
+        s.summary.wind_share = 0.9;
+        s.talking = vec![(0.0, 1.0)];
+    }
+    let q = Project::from_json(&p.to_json()).unwrap();
+    assert_eq!(q.clips[0].analysis.as_ref().unwrap().sound.as_ref(), Some(&fresh));
+    assert!(q.clips_needing_analysis().is_empty());
+}
