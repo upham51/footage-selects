@@ -1,3 +1,7 @@
+New in 0.2.4:
+
+1. The app updates itself. Open the Project tab and choose Check for updates, or turn on Check when the app opens. Download this version by hand once; every version after it installs from inside the app.
+
 New in 0.2.3:
 
 1. A new look. The window opens dark, with light one switch away on the Project tab. The viewer stays dark in both, so footage is judged the same way.
