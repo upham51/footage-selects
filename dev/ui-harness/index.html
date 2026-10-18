@@ -1,219 +1,50 @@
 <!doctype html>
-<html lang="en">
+<html lang="en" data-theme="dark">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title></title>
+  <script src="../../ui/theme.js"></script>
   <link rel="stylesheet" href="../../ui/styles.css">
 </head>
 <body>
   <header class="topbar">
     <div class="brand">
+      <img src="../../ui/icon.svg" alt="">
       <span class="wordmark" data-product-name></span>
-      <span class="project-line" id="project-line">New project</span>
+      <span class="rule"></span>
+      <button class="project-btn" id="project-btn" aria-haspopup="menu" aria-expanded="false"><span class="name" id="project-name">New project</span><svg class="icon" viewBox="0 0 14 14" aria-hidden="true"><path d="M3.5 5.2L7 8.8l3.5-3.6"/></svg></button>
+      <span class="save-state" id="save-state"></span>
     </div>
+    <div class="totals" id="totals" aria-live="polite"></div>
     <div class="topbar-actions">
-      <button class="btn btn-quiet" id="btn-report">Shoot report</button>
-      <button class="btn btn-quiet" id="btn-new">New project</button>
-      <button class="btn btn-quiet" id="btn-open">Open project</button>
-      <button class="btn btn-secondary" id="btn-save">Save project</button>
+      <button class="btn quiet sm" id="btn-report">Shoot report</button>
+      <button class="btn sec sm" id="btn-save">Save</button>
+      <button class="btn sm" id="btn-export-top">Export</button>
     </div>
   </header>
 
-  <section class="panel summary" id="summary" aria-live="polite">
-    <div class="summary-line" id="summary-line"></div>
-    <div class="progress-row" id="progress-row" hidden>
-      <div class="progress-text" id="progress-text"></div>
-      <div class="progress-track" role="progressbar" aria-valuemin="0" aria-valuemax="100" id="progress-track">
-        <div class="progress-fill" id="progress-fill"></div>
-      </div>
-      <button class="btn btn-secondary btn-small" id="btn-analysis"></button>
-    </div>
-  </section>
+  <div class="progress-bar" id="progress-bar" aria-live="polite" hidden>
+    <div class="progress-text" id="progress-text"></div>
+    <div class="progress-track" role="progressbar" aria-valuemin="0" aria-valuemax="100" id="progress-track"><div class="progress-fill" id="progress-fill"></div></div>
+    <button class="btn sec xs" id="btn-analysis"></button>
+  </div>
 
   <main class="layout">
-    <section class="panel main-panel" id="main-panel"></section>
-
+    <section class="panel" id="main-panel"></section>
     <aside class="panel side" id="side">
-      <div class="side-section">
-        <div class="side-head">
-          <h2 class="eyebrow">Selection</h2>
-          <button class="link" id="btn-reset">Reset to defaults</button>
-        </div>
-        <p class="hint">Sliders change the selects right away. Footage is not analyzed again.</p>
-        <div class="field-label">Start from</div>
-        <div class="chips" id="presets" role="group" aria-label="Start from a preset"></div>
-        <p class="hint" id="preset-hint"></p>
-        <div class="slider" data-key="focus_min" data-kind="score">
-          <label for="s-focus">Focus at least</label><output id="o-focus"></output>
-          <input type="range" id="s-focus" min="0" max="100" step="1">
-        </div>
-        <div class="slider" data-key="exposure_min" data-kind="score">
-          <label for="s-exposure">Exposure at least</label><output id="o-exposure"></output>
-          <input type="range" id="s-exposure" min="0" max="100" step="1">
-        </div>
-        <div class="slider" data-key="stability_min" data-kind="score">
-          <label for="s-stability">Stability at least</label><output id="o-stability"></output>
-          <input type="range" id="s-stability" min="0" max="100" step="1">
-        </div>
-        <div class="slider" data-key="smoothing" data-kind="seconds">
-          <label for="s-smoothing">Smoothing</label><output id="o-smoothing"></output>
-          <input type="range" id="s-smoothing" min="0" max="5" step="0.25">
-        </div>
-        <div class="slider" data-key="min_length" data-kind="seconds">
-          <label for="s-min">Shortest select</label><output id="o-min"></output>
-          <input type="range" id="s-min" min="0.5" max="20" step="0.5">
-        </div>
-        <div class="slider" data-key="max_length" data-kind="seconds">
-          <label for="s-max">Longest select</label><output id="o-max"></output>
-          <input type="range" id="s-max" min="1" max="60" step="1">
-        </div>
-        <div class="slider" data-key="max_per_clip" data-kind="count">
-          <label for="s-cap">Selects per clip</label><output id="o-cap"></output>
-          <input type="range" id="s-cap" min="1" max="21" step="1">
-        </div>
-        <label class="check">
-          <input type="checkbox" id="keep-moves"> <span>Keep camera moves whole</span>
-        </label>
-        <p class="hint">Long selects are always cut where the camera is still. With this on, one pan or push can run up to twice the longest select instead of being cut in the middle.</p>
-        <label class="check">
-          <input type="checkbox" id="snap-pauses"> <span>Start and end in a pause when someone talks</span>
-        </label>
-        <p class="hint" id="snap-hint"></p>
-        <div class="field-label sub-head">Which selects win</div>
-        <p class="hint">When a clip has more good stretches than it keeps, these decide which stay. Thresholds are not affected.</p>
-        <div class="slider" data-key="focus_weight" data-kind="weight">
-          <label for="s-wfocus">Focus counts</label><output id="o-wfocus"></output>
-          <input type="range" id="s-wfocus" min="0" max="100" step="5">
-        </div>
-        <div class="slider" data-key="exposure_weight" data-kind="weight">
-          <label for="s-wexposure">Exposure counts</label><output id="o-wexposure"></output>
-          <input type="range" id="s-wexposure" min="0" max="100" step="5">
-        </div>
-        <div class="slider" data-key="stability_weight" data-kind="weight">
-          <label for="s-wstability">Stability counts</label><output id="o-wstability"></output>
-          <input type="range" id="s-wstability" min="0" max="100" step="5">
-        </div>
-      </div>
-
-      <div class="side-section">
-        <h2 class="eyebrow">Filters</h2>
-        <div class="field-label" id="camera-label">Camera movement</div>
-        <div class="chips" id="camera-filter" role="radiogroup" aria-labelledby="camera-label">
-          <button class="chip" role="radio" data-camera="any">Any</button>
-          <button class="chip" role="radio" data-camera="still">Still</button>
-          <button class="chip" role="radio" data-camera="moving">Moving</button>
-          <button class="chip" role="radio" data-camera="pans">Pans</button>
-          <button class="chip" role="radio" data-camera="tilts">Tilts</button>
-        </div>
-        <p class="hint" id="camera-hint"></p>
-        <label class="check">
-          <input type="checkbox" id="set-aside-repeats"> <span>Set aside repeated takes</span>
-        </label>
-        <p class="hint" id="repeats-hint"></p>
-        <div class="field-label sub-head" id="light-label">Light</div>
-        <div class="chips" id="light-filter" role="radiogroup" aria-labelledby="light-label">
-          <button class="chip" role="radio" data-light="any">Any</button>
-          <button class="chip" role="radio" data-light="golden_hour">Golden hour</button>
-          <button class="chip" role="radio" data-light="blue_hour">Blue hour</button>
-          <button class="chip" role="radio" data-light="daylight">Daylight</button>
-          <button class="chip" role="radio" data-light="night">Night</button>
-        </div>
-        <p class="hint" id="light-hint"></p>
-        <label class="check">
-          <input type="checkbox" id="set-aside-sound"> <span>Set aside selects with sound problems</span>
-        </label>
-        <p class="hint" id="sound-hint"></p>
-      </div>
-
-      <div class="side-section">
-        <h2 class="eyebrow">Places and time</h2>
-        <label class="field-label" for="place-input">Where you shot, for clips that do not record it</label>
-        <input id="place-input" class="input" type="text" spellcheck="false" placeholder="Latitude, longitude, for example 38.7223, -9.1393">
-        <label class="field-label" for="clock-zone">Camera clock time zone</label>
-        <select id="clock-zone" class="input"></select>
-        <p class="hint" id="places-hint"></p>
-      </div>
-
-      <div class="side-section">
-        <h2 class="eyebrow">Picture profile</h2>
-        <label class="field-label" for="fallback-profile">For clips whose camera does not say</label>
-        <select id="fallback-profile" class="input"></select>
-        <p class="hint" id="profile-hint"></p>
-      </div>
-
-      <div class="side-section" id="taste-section">
-        <h2 class="eyebrow">Learn from your edits</h2>
-        <div id="taste-body"></div>
-      </div>
-
-      <div class="side-section">
-        <h2 class="eyebrow">Analysis</h2>
-        <label class="field-label" for="sample-rate">Frames scored per second</label>
-        <select id="sample-rate" class="input">
-          <option value="1">1 per second</option>
-          <option value="2">2 per second</option>
-          <option value="4">4 per second</option>
-          <option value="6">6 per second</option>
-          <option value="8">8 per second</option>
-          <option value="12">12 per second</option>
-        </select>
-        <p class="hint">This is the only setting that needs the footage analyzed again. More frames per second catches shorter moments but takes longer.</p>
-      </div>
-
-      <div class="side-section">
-        <h2 class="eyebrow">Export</h2>
-        <label class="field-label" for="timeline-name">Timeline name</label>
-        <input id="timeline-name" class="input" type="text" maxlength="80" spellcheck="false">
-        <label class="field-label" for="timeline-rate">Timeline frame rate</label>
-        <select id="timeline-rate" class="input"></select>
-        <label class="check" id="drop-frame-row">
-          <input type="checkbox" id="drop-frame"> <span>Drop frame timecode</span>
-        </label>
-        <label class="field-label" for="handles">Extra time around each select</label>
-        <select id="handles" class="input">
-          <option value="0">None</option>
-          <option value="0.5">0.5 seconds</option>
-          <option value="1">1 second</option>
-          <option value="2">2 seconds</option>
-          <option value="3">3 seconds</option>
-        </select>
-        <p class="hint">Room for transitions and speed ramps. Markers still sit where each select starts, and scores are for the select itself.</p>
-        <fieldset class="radios">
-          <legend class="field-label">Layout</legend>
-          <label class="radio"><input type="radio" name="layout" value="full_clips_below"> <span>Whole clips, with each select stacked above its clip</span></label>
-          <label class="radio"><input type="radio" name="layout" value="selects_only"> <span>Selects only, one after another</span></label>
-        </fieldset>
-        <label class="check">
-          <input type="checkbox" id="export-stills"> <span>Also save a still of every select and a contact sheet</span>
-        </label>
-        <button class="btn btn-primary btn-block" id="btn-export">Export timeline</button>
-        <p class="hint" id="export-hint">Writes four files side by side: .xml for Premiere Pro and DaVinci Resolve, .fcpxml for Final Cut Pro, an .edl, and a .csv spreadsheet.</p>
-        <div id="stills-status" aria-live="polite"></div>
-        <button class="btn btn-secondary btn-block" id="btn-stills">Save stills and contact sheet only</button>
-      </div>
-
-      <div class="side-section" id="reel-section">
-        <h2 class="eyebrow">Make a reel</h2>
-        <div id="reel-body"></div>
-      </div>
-
-      <div class="side-section">
-        <h2 class="eyebrow">Updates</h2>
-        <p class="hint" id="version-line"></p>
-        <div id="update-status" aria-live="polite"></div>
-        <button class="btn btn-secondary btn-block" id="btn-update">Check for updates</button>
-        <label class="check">
-          <input type="checkbox" id="auto-update"> <span>Check when the app opens</span>
-        </label>
-        <p class="hint">A check asks GitHub whether a newer version exists. No footage, scores or project details are sent, and nothing else in the app uses the internet.</p>
-      </div>
+      <div class="side-tabs"><div class="tabs" id="side-tabs" role="tablist" aria-label="Settings"></div></div>
+      <div class="side-body" id="side-body"></div>
+      <div class="side-foot" id="side-foot"></div>
     </aside>
   </main>
 
+  <div class="tip" id="tip" role="tooltip" hidden></div>
+  <div class="menu" id="menu" role="menu" hidden></div>
+
   <div class="drop-overlay" id="drop-overlay" hidden>
     <div class="drop-card">
-      <svg class="icon icon-lg" viewBox="0 0 14 14"><path d="M7 2v7M4 6l3 3 3-3M2.5 11.5h9"/></svg>
+      <svg class="icon icon-lg" viewBox="0 0 14 14" aria-hidden="true"><path d="M7 2v7M4 6l3 3 3-3M2.5 11.5h9"/></svg>
       <div>Drop to add this footage</div>
     </div>
   </div>

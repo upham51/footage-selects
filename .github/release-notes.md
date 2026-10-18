@@ -1,3 +1,13 @@
+New in 0.2.3:
+
+1. A new look. The window opens dark, with light one switch away on the Project tab. The viewer stays dark in both, so footage is judged the same way.
+2. Less to read. Explanations sit behind the small i beside each setting; hover it to read them.
+3. One clip at a time: a large viewer first, then one timeline with the selects numbered on a frame strip and thin Focus, Exposure and Stability lines that turn red under their minimum.
+4. Play flips through the clip as fast as frames can be read, without sound. Space plays, [ and ] jump between selects, K keeps, X drops, 1 to 5 give stars.
+5. Selects are cards with a picture, length and three small score bars. Stretches that were not used are small chips; hover one to see why.
+6. All clips shows a picture of each clip, and tabs for clips with selects and clips with nothing kept.
+7. Settings are in four tabs: Selects, Filters, Export and Project. The two length sliders are now one, and smoothing and ranking are under Advanced.
+
 Fixed in 0.2.2:
 
 1. Jello: a fast, small wobble is now caught, and calm footage, pans and water no longer come near the line.

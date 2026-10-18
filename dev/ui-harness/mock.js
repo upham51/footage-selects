@@ -159,6 +159,6 @@
   };
   window.__mockEmit = (name, payload) => (listeners[name] || []).forEach((fn) => fn({ payload }));
   if (scene === "probing") setTimeout(() => window.__mockEmit("probe-progress", { done: 40, total: 170 }), 50);
-  if (scene === "detail" || scene === "frame-error") setTimeout(() => document.querySelector('tr[data-clip="3"]')?.click(), 300);
+  if (scene === "detail" || scene === "frame-error") setTimeout(() => document.querySelector('[data-clip="3"]')?.click(), 300);
   if (scene === "fit") setTimeout(() => document.querySelector('[data-act="fit"]')?.click(), 300);
 })();
