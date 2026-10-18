@@ -148,7 +148,8 @@ jobs:
           args=(--target ${{ matrix.target }} --bundles ${{ matrix.bundles }})
           if [ -n "$TAURI_SIGNING_PRIVATE_KEY" ] && [ -n "$UPDATER_PUBLIC_KEY" ]; then
             echo "Update signing is set up: building update files too."
-            args+=(--config '{"bundle":{"createUpdaterArtifacts":true}}')
+            # The bundler checks its update signatures against this key, so it must be in the config too.
+            args+=(--config "{\"bundle\":{\"createUpdaterArtifacts\":true},\"plugins\":{\"updater\":{\"pubkey\":\"$UPDATER_PUBLIC_KEY\"}}}")
           else
             echo "Update signing is not set up: this build cannot update itself."
             unset UPDATER_PUBLIC_KEY
