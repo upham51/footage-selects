@@ -60,6 +60,8 @@ pub struct SelectMeta {
     /// "S-Log3, middle tones -0.5 stops".
     pub exposure_note: Option<String>,
     pub camera_move: bool,
+    /// Which way the camera moves, when it does.
+    pub camera: crate::selection::CameraMove,
 }
 
 impl SelectMeta {
@@ -80,8 +82,15 @@ impl SelectMeta {
             s.push_str(n);
             s.push('.');
         }
-        if self.camera_move {
-            s.push_str(" Camera move.");
+        use crate::selection::CameraMove;
+        match self.camera {
+            CameraMove::Still | CameraMove::Other if self.camera_move => s.push_str(" Camera move."),
+            CameraMove::Still | CameraMove::Other => {}
+            m => {
+                s.push(' ');
+                s.push_str(m.words());
+                s.push('.');
+            }
         }
         s
     }
@@ -279,6 +288,7 @@ pub fn build_timeline(project: &Project, selections: &[ClipSelection]) -> (Timel
                     tier: Tier::from_score(seg.score),
                     exposure_note: profile_note(profile, seg.key_stops),
                     camera_move: seg.camera_move,
+                    camera: seg.camera,
                 }),
             });
         }

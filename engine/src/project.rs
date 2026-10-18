@@ -9,7 +9,7 @@ use crate::probe::{file_stamp, ClipInfo};
 use crate::rate::Rate;
 use crate::scores::{score_clip_with, ScoreSeries, ToneContext};
 use crate::tone::{looks_like_log, ToneProfile};
-use crate::selection::{select_clip, ClipSelection, SelectionSettings, Summary};
+use crate::selection::{apply_cap, select_candidates, AsideReason, ClipSelection, SegmentStatus, SelectionSettings, SimilarTo, Summary};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
@@ -204,12 +204,48 @@ impl ProjectClip {
         }
     }
 
+    /// Selection for this clip on its own. Repeated takes are found across
+    /// clips, so use `Project::selections` where they matter.
     pub fn select(&self, settings: &SelectionSettings, fallback: Option<ToneProfile>) -> ClipSelection {
+        let mut sel = self.candidates(settings, fallback);
+        apply_cap(&mut sel.segments, settings.max_per_clip);
+        sel
+    }
+
+    fn candidates(&self, settings: &SelectionSettings, fallback: Option<ToneProfile>) -> ClipSelection {
         match self.scores(fallback) {
-            Some(s) => select_clip(&s, self.measured_until(), settings),
+            Some(s) => select_candidates(&s, self.measured_until(), settings),
             None => ClipSelection::default(),
         }
     }
+
+    /// Whole-picture fingerprints at a quarter, half and three quarters of
+    /// the way through `start..end`, or None for clips analysed before
+    /// fingerprints were measured.
+    pub fn fingerprints(&self, start: f64, end: f64) -> Option<[u64; 3]> {
+        let f = &self.analysis.as_ref()?.frames;
+        if !f.has_ladder() || f.fp.len() != f.len() {
+            return None;
+        }
+        let at = |share: f64| {
+            let t = (start + share * (end - start)) as f32;
+            let i = f.t.partition_point(|&x| x < t).min(f.len() - 1);
+            let j = if i > 0 && (f.t[i - 1] - t).abs() < (f.t[i] - t).abs() { i - 1 } else { i };
+            f.fp[j][crate::fingerprint::HASH_FULL]
+        };
+        Some([at(0.25), at(0.5), at(0.75)])
+    }
+}
+
+/// Mean fingerprint distance, out of 64 bits, under which two selects from
+/// different clips count as the same shot taken again. Different shots of
+/// the same place from another angle are usually 20 or more apart; retakes
+/// of one framing are usually under 8.
+pub const REPEAT_DISTANCE: f32 = 10.0;
+
+/// Mean distance between two sets of fingerprints.
+pub fn repeat_distance(a: &[u64; 3], b: &[u64; 3]) -> f32 {
+    (0..3).map(|k| crate::fingerprint::distance(a[k], b[k]) as f32).sum::<f32>() / 3.0
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
@@ -330,15 +366,65 @@ impl Project {
         self.sample_rate = rate.clamp(0.5, 30.0);
     }
 
+    /// Selection for every clip, in project order.
+    ///
+    /// Good segments from every clip are compared best first. A segment that
+    /// looks like a better one from another clip notes it in `similar_to`,
+    /// and with `set_aside_repeats` it is set aside, so the better take wins
+    /// and the clip's next best segment can take its place under the limit.
+    pub fn selections(&self) -> Vec<ClipSelection> {
+        let s = &self.selection;
+        let mut sels: Vec<ClipSelection> = self.clips.iter().map(|c| c.candidates(s, self.fallback_profile)).collect();
+        // (clip index, segment index, score, fingerprints)
+        let mut cands: Vec<(usize, usize, f32, [u64; 3])> = Vec::new();
+        for (ci, (c, sel)) in self.clips.iter().zip(&sels).enumerate() {
+            for (si, g) in sel.segments.iter().enumerate() {
+                if g.status == SegmentStatus::Kept {
+                    if let Some(fp) = c.fingerprints(g.start, g.end) {
+                        cands.push((ci, si, g.score, fp));
+                    }
+                }
+            }
+        }
+        cands.sort_by(|a, b| b.2.partial_cmp(&a.2).unwrap_or(std::cmp::Ordering::Equal).then(a.0.cmp(&b.0)).then(a.1.cmp(&b.1)));
+        let mut accepted: Vec<(usize, usize, [u64; 3])> = Vec::new();
+        for (ci, si, _, fp) in cands {
+            let twin = accepted
+                .iter()
+                .filter(|a| a.0 != ci)
+                .map(|a| (a, repeat_distance(&a.2, &fp)))
+                .filter(|(_, d)| *d <= REPEAT_DISTANCE)
+                .min_by(|x, y| x.1.partial_cmp(&y.1).unwrap_or(std::cmp::Ordering::Equal))
+                .map(|(a, _)| (a.0, a.1));
+            match twin {
+                Some((tc, ts)) => {
+                    let other = &sels[tc].segments[ts];
+                    let similar = SimilarTo { clip: self.clips[tc].id, start: other.start, end: other.end };
+                    let g = &mut sels[ci].segments[si];
+                    g.similar_to = Some(similar);
+                    if s.set_aside_repeats {
+                        g.status = SegmentStatus::SetAside;
+                        g.aside = Some(AsideReason::Repeat);
+                    }
+                }
+                None => accepted.push((ci, si, fp)),
+            }
+        }
+        for sel in sels.iter_mut() {
+            apply_cap(&mut sel.segments, s.max_per_clip);
+        }
+        sels
+    }
+
     /// Selection for every clip, in project order, plus the summary line.
     pub fn select_all(&self) -> (Vec<ClipSelection>, Summary) {
+        let sels = self.selections();
         let mut out = Vec::with_capacity(self.clips.len());
         let mut sum = Summary {
             clips_total: self.clips.len(),
             ..Default::default()
         };
-        for c in &self.clips {
-            let sel = c.select(&self.selection, self.fallback_profile);
+        for (c, sel) in self.clips.iter().zip(sels) {
             if let Some(info) = &c.info {
                 sum.footage_seconds += info.duration;
             }

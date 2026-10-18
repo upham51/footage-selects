@@ -49,6 +49,9 @@ const ICON = {
   stop: '<rect x="3.5" y="3.5" width="7" height="7" rx="1.2"/>',
   play: '<path d="M4.5 2.8v8.4L11 7z"/>',
   down: '<path d="M7 2v7M4 6l3 3 3-3M2.5 11.5h9"/>',
+  aside: '<path d="M2.5 7h6.5M6.5 4.2L9.3 7 6.5 9.8M11.5 3v8"/>',
+  left: '<path d="M8.8 2.8L4.6 7l4.2 4.2"/>',
+  right: '<path d="M5.2 2.8L9.4 7l-4.2 4.2"/>',
   film: '<rect x="2" y="2.5" width="10" height="9" rx="1.5"/><path d="M4.6 2.5v9M9.4 2.5v9M2 5.5h2.6M2 8.5h2.6M9.4 5.5H12M9.4 8.5H12"/>',
 };
 const icon = (name, cls = "icon") => `<svg class="${cls}" viewBox="0 0 14 14" aria-hidden="true">${ICON[name]}</svg>`;
@@ -70,7 +73,10 @@ const SEG_STATUS = {
   below_threshold: ["red", "triangle", "Below threshold"],
   too_short: ["grey", "dash", "Too short"],
   over_limit: ["amber", "stack", "Over the per-clip limit"],
+  set_aside: ["grey", "aside", "Set aside"],
 };
+const CAMERA_WORDS = { still: "Still", pan_left: "Pan left", pan_right: "Pan right", tilt_up: "Tilt up", tilt_down: "Tilt down", other: "Moving" };
+const FILTER_WORDS = { any: "any movement", still: "a still camera", moving: "a moving camera", pans: "a pan", tilts: "a tilt" };
 const ISSUE_WORDS = {
   clipped_highlights: "Highlights clipped.",
   underexposed: "Underexposed.",
@@ -80,8 +86,9 @@ const ISSUE_WORDS = {
 };
 const fmtStops = (v) => (v == null || !isFinite(v) ? "–" : `${v > 0.05 ? "+" : v < -0.05 ? "−" : ""}${Math.abs(v).toFixed(1)}`);
 const profileLabel = (id) => state?.profiles?.find((p) => p.id === id)?.label || id;
-const SEG_FILL = { kept: "#E7F1EE", too_short: "#EFF2F4", over_limit: "#FDF2E2", below_threshold: "#FCEDEC" };
-const SEG_INK = { kept: "#0F5C4E", too_short: "#7A8798", over_limit: "#9A5B00", below_threshold: "#B3261E" };
+const SEG_FILL = { kept: "#E7F1EE", too_short: "#EFF2F4", over_limit: "#FDF2E2", below_threshold: "#FCEDEC", set_aside: "#E8EDF4" };
+const SEG_INK = { kept: "#0F5C4E", too_short: "#7A8798", over_limit: "#9A5B00", below_threshold: "#B3261E", set_aside: "#1D3450" };
+const clipName = (id) => state?.clips?.find((c) => c.id === id)?.name || "another clip";
 
 /* ---------- state ---------- */
 
@@ -215,6 +222,12 @@ function noSelectHtml(r) {
   if (r.kind === "too_short") {
     p = pill("grey", "dash", "Too short");
     text = `Good stretches last up to ${fmtDur(r.longest)}, the shortest select is ${fmtDur(r.needs)}`;
+  } else if (r.kind === "set_aside") {
+    p = pill("grey", "aside", "Set aside");
+    const bits = [];
+    if (r.camera) bits.push(`${plural(r.camera, "good stretch", "good stretches")} without ${FILTER_WORDS[state?.selection?.camera] || "the chosen movement"}`);
+    if (r.repeats) bits.push(`${plural(r.repeats, "repeated take")} of a better select in another clip`);
+    text = bits.join(", ");
   } else {
     p = pill("red", "triangle", "Below threshold");
     const word = SCORE_WORD[r.score] || r.score;
@@ -236,7 +249,8 @@ function selectsCell(c) {
   else if (!kept && c.no_select) return `${stripSvg(c)}${noSelectHtml(c.no_select)}`;
   else if (!kept) text = "None meet the thresholds";
   else text = `<strong class="num">${kept}</strong> ${kept === 1 ? "select" : "selects"} · <span class="num">${fmtDur(secs)}</span>`;
-  const extra = c.over_limit ? ` · ${c.over_limit} more over the limit` : "";
+  let extra = c.over_limit ? ` · ${c.over_limit} more over the limit` : "";
+  if (c.set_aside) extra += ` · ${c.set_aside} set aside`;
   const used = c.used?.length ? `<div class="sel-used">${icon("film")}${plural(c.used.length, "shot")} in your edits</div>` : "";
   return `${stripSvg(c)}<div class="sel-count">${text}${kept ? extra : ""}</div>${used}`;
 }
@@ -296,8 +310,17 @@ function whyText(seg, sel, cap) {
     }
     case "too_short": return `Dropped: good, but shorter than the ${fmtDur(sel.min_length)} minimum.`;
     case "over_limit": return `Dropped: good, but ${plural(cap, "better select is", "better selects are")} already kept in this clip.`;
+    case "set_aside":
+      if (seg.aside === "repeat" && seg.similar_to) return `Set aside: looks like the select in ${clipName(seg.similar_to.clip)} at ${fmtClock(seg.similar_to.start)}, which scored higher.`;
+      return `Set aside: the camera filter asks for ${FILTER_WORDS[sel.camera] || "another movement"}, and this stretch is ${(CAMERA_WORDS[seg.camera] || "moving").toLowerCase()}.`;
   }
   return "";
+}
+
+/** A note for a kept or over-limit stretch that looks like a better select elsewhere. */
+function repeatNote(seg) {
+  if (!seg.similar_to || seg.status === "set_aside") return "";
+  return ` Looks like the select in ${clipName(seg.similar_to.clip)} at ${fmtClock(seg.similar_to.start)}.`;
 }
 
 function graphSvg(key, label, w, d) {
@@ -329,6 +352,7 @@ function graphSvg(key, label, w, d) {
     ${line(d.smoothed, "#2C4A6E", 1.7)}
     <line x1="0" x2="${w}" y1="${ty}" y2="${ty}" stroke="#2C4A6E" stroke-opacity=".55" stroke-dasharray="4 4" stroke-width="1"/>
     <text x="${w - 6}" y="${Math.max(11, ty - 4)}" text-anchor="end" font-size="11" fill="#5E6878" font-family="Inter Tight">${pct(thr)}</text>
+    <line class="pin" x1="${x(viewer.pin).toFixed(1)}" x2="${x(viewer.pin).toFixed(1)}" y1="0" y2="${H}" stroke="#C9A227" stroke-width="2"/>
     <line class="cursor" x1="0" x2="0" y1="0" y2="${H}" stroke="#1D3450" stroke-width="1" visibility="hidden"/>
   </svg>`;
 }
@@ -411,19 +435,20 @@ function renderDetail() {
       const [t, sh, wd] = SEG_STATUS[s.status];
       const usedIn = (d.used || []).filter(([a, b, n]) => Math.min(b, s.end) - Math.max(a, s.start) > 0.25).map(([, , n]) => n);
       const usedText = usedIn.length ? ` Used in ${[...new Set(usedIn)].join(", ")}.` : "";
-      return `<tr><td class="tabular">${fmtClock(s.start)} – ${fmtClock(s.end)}</td><td class="num tabular">${fmtDur(s.end - s.start)}</td><td>${pill(t, sh, wd)}</td><td class="why">${esc(whyText(s, d.selection, keptCount) + usedText)}</td>
-        <td class="num tabular">${pct(s.focus)}</td><td class="num tabular">${pct(s.exposure)}</td>${isLog ? `<td class="num tabular">${fmtStops(s.key_stops)}</td>` : ""}<td class="num tabular">${pct(s.stability)}</td><td class="num tabular">${pct(s.score)}</td></tr>`;
+      const pinned = viewer.pin >= s.start && viewer.pin < s.end ? ' class="pinned"' : "";
+      return `<tr data-seg="${s.start}:${s.end}"${pinned} title="Show this stretch in the frame viewer"><td class="tabular nowrap">${fmtClock(s.start)} – ${fmtClock(s.end)}</td><td class="num tabular">${fmtDur(s.end - s.start)}</td><td>${pill(t, sh, wd)}</td><td class="why">${esc(whyText(s, d.selection, keptCount) + repeatNote(s) + usedText)}</td>
+        <td class="nowrap">${esc(CAMERA_WORDS[s.camera] || "Still")}</td><td class="num tabular">${pct(s.focus)}</td><td class="num tabular">${pct(s.exposure)}</td>${isLog ? `<td class="num tabular">${fmtStops(s.key_stops)}</td>` : ""}<td class="num tabular">${pct(s.stability)}</td><td class="num tabular">${pct(s.score)}</td></tr>`;
     }).join("");
     const usedLegend = (d.used || []).length ? `<span class="legend-used"><svg class="icon" viewBox="0 0 14 14" aria-hidden="true"><rect x="1.5" y="3" width="11" height="8" rx="2" stroke="#9A5B00" stroke-dasharray="2.5 1.8"/></svg>Used in your edits</span>` : "";
-    body = `<div class="legend"><span class="label">Stretches</span>${Object.values(SEG_STATUS).map(([t, s, wd]) => pill(t, s, wd)).join("")}${d.measured_until < d.duration - 0.01 ? pill("grey", "clock", "Not measured yet") : ""}${usedLegend}</div>
+    body = `${viewerHtml(d)}<div class="legend"><span class="label">Stretches</span>${Object.values(SEG_STATUS).map(([t, s, wd]) => pill(t, s, wd)).join("")}${d.measured_until < d.duration - 0.01 ? pill("grey", "clock", "Not measured yet") : ""}${usedLegend}</div>
       <div class="graphs">
         <div class="graph">${laneSvg(w, d)}</div>
         ${graph("focus", "Focus")}${graph("exposure", "Exposure")}${graph("stability", "Stability")}
         <div class="graph-axis">${axisSvg(w, d.duration || 1)}</div>
       </div>
-      <div class="readout" id="readout">Move the pointer over a graph to read the scores at that moment. Navy is the smoothed score used for selection, grey the raw per-frame score, the dashed line the threshold.</div>
+      <div class="readout" id="readout">Move the pointer over a graph to read the scores and see the picture at that moment; click to hold it. Navy is the smoothed score used for selection, grey the raw per-frame score, the dashed line the threshold.</div>
       <div class="seg-table"><h3 class="eyebrow" style="padding-left:18px">Every stretch of this clip</h3>
-        <table><thead><tr><th>Time</th><th class="num">Length</th><th>Result</th><th>Why</th><th class="num">Focus</th><th class="num">Exposure</th>${isLog ? '<th class="num" title="Middle tones in stops from middle grey">Stops</th>' : ""}<th class="num">Stability</th><th class="num">Overall</th></tr></thead><tbody>${segRows}</tbody></table></div>`;
+        <table><thead><tr><th>Time</th><th class="num">Length</th><th>Result</th><th>Why</th><th>Camera</th><th class="num">Focus</th><th class="num">Exposure</th>${isLog ? '<th class="num" title="Middle tones in stops from middle grey">Stops</th>' : ""}<th class="num">Stability</th><th class="num">Overall</th></tr></thead><tbody>${segRows}</tbody></table></div>`;
   }
 
   panel.innerHTML = `<div class="detail">
@@ -441,6 +466,7 @@ function renderDetail() {
     if (real > 0 && Math.abs(real - w) > 1) { graphWidth = real; renderDetail(); return; }
   }
   attachHover(w, d);
+  paintViewer();
 }
 
 function profileRowHtml(d) {
@@ -495,13 +521,24 @@ function attachHover(w, d) {
     const word = seg ? SEG_STATUS[seg.status][2] : "Not measured yet";
     const ks = d.raw.key_stops || [], cl = d.raw.clipped || [];
     const logBits = ks.length ? ` · Middle tones <span class="num">${fmtStops(ks[i])}</span> stops${cl[i] > 0.005 ? ` · <span class="num">${(cl[i] * 100).toFixed(cl[i] < 0.1 ? 1 : 0)}%</span> clipped` : ""}` : "";
+    if (viewer.mode !== "off") showFrameAt(t);
     readout.innerHTML = `At <span class="num">${fmtClock(t)}</span> · Focus <span class="num">${pct(d.smoothed.focus[i])}</span> · Exposure <span class="num">${pct(d.smoothed.exposure[i])}</span>${logBits} · Stability <span class="num">${pct(d.smoothed.stability[i])}</span> · ${esc(word)}`;
+  });
+  const timeAt = (e) => {
+    const r = svgs[0].getBoundingClientRect();
+    return Math.max(0, Math.min(1, (e.clientX - r.left) / r.width)) * (d.duration || 1);
+  };
+  box.addEventListener("click", (e) => pinAt(timeAt(e)));
+  box.addEventListener("mouseleave", () => {
+    for (const s of svgs) s.querySelector(".cursor").setAttribute("visibility", "hidden");
+    showFrameAt(viewer.pin);
   });
 }
 
 async function openDetail(id) {
   view = { mode: "detail", clipId: id };
   detail = null; detailError = null;
+  viewer.clipId = null;
   renderMain();
   await refreshDetail();
 }
@@ -514,7 +551,255 @@ async function refreshDetail() {
   } catch (e) {
     detailError = String(e);
   }
+  if (detail && viewer.clipId !== view.clipId) resetViewer(detail);
   renderDetail();
+}
+
+/* ---------- frame viewer ---------- */
+
+/*
+ * One still of the clip, read by ffmpeg at the moment under the pointer, or
+ * at the moment last clicked ("held"). Overlays are drawn here from the
+ * still's pixels: false colour reads brightness in stops from middle grey
+ * through the clip's picture profile (detail.tone), the same way the
+ * exposure score does.
+ */
+const VIEW_MODES = [["picture", "Picture"], ["false_color", "False color"], ["peaking", "Focus peaking"], ["clipping", "Clipping"]];
+const FALSE_BANDS = [
+  // [lowest stops, rgb, words]; checked top down after the clip point.
+  [2.5, [240, 146, 36], "2.5 or more stops over"],
+  [1, [236, 214, 120], "1 to 2.5 over"],
+  [0.5, null, "Bright middle tones"],
+  [-0.5, [64, 170, 98], "Middle grey"],
+  [-2.5, null, "Darker middle tones"],
+  [-5, [58, 100, 206], "2.5 to 5 under"],
+  [-Infinity, [116, 52, 150], "More than 5 under"],
+];
+const CLIP_RGB = [222, 52, 40];
+const PEAK_RGB = [255, 214, 10];
+
+let viewer = { clipId: null, pin: 0, want: null, frame: null, loading: false, error: null, mode: "picture" };
+try { viewer.mode = localStorage.getItem("viewer-mode") || "picture"; } catch (_) { /* a remembered view is a convenience */ }
+const frameCache = new Map();
+const FRAME_CACHE_SIZE = 24;
+const frameKey = (id, t) => `${id}@${(Math.round(t * 10) / 10).toFixed(1)}`;
+
+function resetViewer(d) {
+  const kept = d.segments.find((s) => s.status === "kept");
+  const pin = kept ? (kept.start + kept.end) / 2 : (d.duration || 0) * 0.25;
+  viewer = { clipId: view.clipId, pin, want: null, frame: null, loading: false, error: null, mode: viewer.mode };
+  showFrameAt(pin);
+}
+
+function parseStill(buf) {
+  const u8 = buf instanceof ArrayBuffer ? new Uint8Array(buf) : new Uint8Array(buf);
+  const dv = new DataView(u8.buffer, u8.byteOffset, u8.byteLength);
+  const w = dv.getUint32(0, true), h = dv.getUint32(4, true);
+  return { w, h, rgba: new Uint8ClampedArray(u8.buffer, u8.byteOffset + 8, w * h * 4), modes: {} };
+}
+
+function showFrameAt(t) {
+  if (view.mode !== "detail" || !detail) return;
+  viewer.want = t;
+  const hit = frameCache.get(frameKey(view.clipId, t));
+  if (hit) { viewer.frame = hit; viewer.frameT = t; viewer.error = null; paintViewer(); return; }
+  fetchFrame();
+}
+
+async function fetchFrame() {
+  if (viewer.loading) return; // the newest wanted moment is read when this one returns
+  const id = view.clipId, t = viewer.want;
+  viewer.loading = true;
+  paintViewerState();
+  try {
+    const f = parseStill(await invoke("clip_frame", { id, t }));
+    frameCache.set(frameKey(id, t), f);
+    if (frameCache.size > FRAME_CACHE_SIZE) frameCache.delete(frameCache.keys().next().value);
+    if (view.clipId === id) { viewer.frame = f; viewer.frameT = t; viewer.error = null; }
+  } catch (e) {
+    if (view.clipId === id) viewer.error = String(e);
+  } finally {
+    viewer.loading = false;
+  }
+  if (view.mode === "detail" && view.clipId === id && viewer.want !== t) showFrameAt(viewer.want);
+  else paintViewer();
+}
+
+function pinAt(t) {
+  viewer.pin = Math.max(0, Math.min(detail?.duration || 0, t));
+  for (const line of document.querySelectorAll(".graphs line.pin")) {
+    const svg = line.ownerSVGElement, w = svg.viewBox.baseVal.width;
+    const x = ((viewer.pin / (detail.duration || 1)) * w).toFixed(1);
+    line.setAttribute("x1", x); line.setAttribute("x2", x);
+  }
+  for (const tr of document.querySelectorAll(".seg-table tr[data-seg]")) {
+    const [a, b] = tr.dataset.seg.split(":").map(Number);
+    tr.classList.toggle("pinned", viewer.pin >= a && viewer.pin < b);
+  }
+  showFrameAt(viewer.pin);
+}
+
+function stepSelect(dir) {
+  if (!detail) return;
+  const kept = detail.segments.filter((s) => s.status === "kept");
+  const mids = kept.map((s) => (s.start + s.end) / 2);
+  const next = dir > 0 ? mids.find((m) => m > viewer.pin + 0.05) : [...mids].reverse().find((m) => m < viewer.pin - 0.05);
+  if (next != null) pinAt(next);
+}
+
+function viewerHtml(d) {
+  const modes = VIEW_MODES.map(([id, word]) => `<button class="chip" role="radio" aria-checked="${viewer.mode === id}" data-viewmode="${id}">${word}</button>`).join("");
+  const kept = d.segments.filter((s) => s.status === "kept").length;
+  const steps = kept ? `<div class="viewer-steps"><button class="btn btn-secondary btn-small" data-act="prev-select" title="Previous select">${icon("left")}Previous select</button><button class="btn btn-secondary btn-small" data-act="next-select" title="Next select">Next select${icon("right")}</button></div>` : "";
+  return `<div class="viewer">
+    <div class="viewer-bar"><div class="chips" role="radiogroup" aria-label="How the frame is shown">${modes}</div>${steps}</div>
+    <div class="viewer-well"><canvas id="viewer-canvas" aria-label="The clip at the held moment"></canvas><div class="viewer-state" id="viewer-state"></div></div>
+    <div class="viewer-foot"><div class="viewer-time" id="viewer-time"></div><div class="viewer-legend" id="viewer-legend"></div></div>
+  </div>`;
+}
+
+function lumaOf(f) {
+  if (f.luma) return f.luma;
+  const n = f.w * f.h, y = new Uint8Array(n), p = f.rgba;
+  for (let i = 0, j = 0; i < n; i++, j += 4) y[i] = (p[j] * 0.2126 + p[j + 1] * 0.7152 + p[j + 2] * 0.0722 + 0.5) | 0;
+  f.luma = y;
+  return y;
+}
+
+/** The still with the current overlay, plus what it measured. Cached per still and mode. */
+function overlay(f, mode, tone) {
+  const key = `${mode}:${tone.profile}:${tone.clip_luma}`;
+  if (f.modes[key]) return f.modes[key];
+  const n = f.w * f.h, src = f.rgba, out = new Uint8ClampedArray(src.length), Y = lumaOf(f);
+  const set = (j, c) => { out[j] = c[0]; out[j + 1] = c[1]; out[j + 2] = c[2]; out[j + 3] = 255; };
+  const grey = (j, v) => { out[j] = v; out[j + 1] = v; out[j + 2] = v; out[j + 3] = 255; };
+  const stats = {};
+  if (mode === "false_color") {
+    const lut = new Array(256);
+    for (let v = 0; v < 256; v++) {
+      if (v >= tone.clip_luma) { lut[v] = CLIP_RGB; continue; }
+      const s = tone.stops[v];
+      const band = FALSE_BANDS.find((b) => s >= b[0]);
+      lut[v] = band[1];
+    }
+    for (let i = 0, j = 0; i < n; i++, j += 4) { const c = lut[Y[i]]; if (c) set(j, c); else grey(j, (Y[i] * 0.8 + 18) | 0); }
+  } else if (mode === "peaking") {
+    const w = f.w, h = f.h, g = new Uint16Array(n);
+    const hist = new Uint32Array(1021);
+    for (let y = 1; y < h - 1; y++) {
+      for (let x = 1; x < w - 1; x++) {
+        const i = y * w + x;
+        const v = Math.abs(Y[i + 1] - Y[i - 1]) + Math.abs(Y[i + w] - Y[i - w]);
+        g[i] = v; hist[v]++;
+      }
+    }
+    // Mark the strongest 6% of edges, but never weak ones: a soft picture shows few or none.
+    let need = n * 0.06, thr = 1020;
+    while (thr > 0 && need > 0) { need -= hist[thr]; thr--; }
+    thr = Math.max(thr, 56);
+    let peaks = 0;
+    for (let i = 0, j = 0; i < n; i++, j += 4) {
+      if (g[i] > thr) { set(j, PEAK_RGB); peaks++; } else grey(j, (Y[i] * 0.55 + 14) | 0);
+    }
+    stats.peaks = peaks / n;
+  } else if (mode === "clipping") {
+    const w = f.w, standard = tone.profile === "standard";
+    let clipped = 0, crushed = 0;
+    for (let i = 0, j = 0; i < n; i++, j += 4) {
+      const v = Y[i];
+      if (v >= tone.clip_luma) {
+        const x = i % w, y = (i / w) | 0;
+        grey(j, ((x + y) >> 3) & 1 ? 250 : 40);
+        clipped++;
+      } else if (standard ? v <= 4 : tone.stops[v] <= -5) {
+        set(j, [58, 100, 206]);
+        crushed++;
+      } else {
+        out[j] = src[j]; out[j + 1] = src[j + 1]; out[j + 2] = src[j + 2]; out[j + 3] = 255;
+      }
+    }
+    stats.clipped = clipped / n;
+    stats.crushed = crushed / n;
+  } else {
+    out.set(src);
+  }
+  const result = { img: new ImageData(out, f.w, f.h), stats };
+  f.modes[key] = result;
+  return result;
+}
+
+const sharePct = (v) => (v < 0.001 ? "under 0.1%" : v < 0.1 ? `${(v * 100).toFixed(1)}%` : `${Math.round(v * 100)}%`);
+
+function legendHtml(mode, stats, tone) {
+  const sw = (c) => `<span class="swatch" style="background:rgb(${c.join(",")})"></span>`;
+  if (mode === "false_color") {
+    const bands = [[CLIP_RGB, "Clipped"], ...FALSE_BANDS.filter((b) => b[1]).map((b) => [b[1], b[2]])];
+    const how = tone.profile === "standard" ? "Stops from middle grey, as the picture looks." : `Stops from middle grey through the ${esc(profileLabel(tone.profile))} curve.`;
+    return `${bands.map(([c, w]) => `<span class="legend-item">${sw(c)}${esc(w)}</span>`).join("")}<span class="legend-note">Grey areas sit in the middle tones. ${how}</span>`;
+  }
+  if (mode === "peaking") {
+    return `<span class="legend-item">${sw(PEAK_RGB)}Sharpest edges</span><span class="legend-note">${stats.peaks < 0.004 ? "Almost nothing is marked, so nothing in this frame is crisp." : "Yellow shows where the picture is in focus. A soft frame shows few marks or none."}</span>`;
+  }
+  if (mode === "clipping") {
+    const c = stats.clipped, k = stats.crushed;
+    const said = c > 0.0005 || k > 0.0005
+      ? `${c > 0.0005 ? `${sharePct(c)} of this frame is clipped and cannot be recovered in the grade.` : "Nothing is clipped."} ${k > 0.0005 ? `${sharePct(k)} is ${tone.profile === "standard" ? "crushed to black" : "more than 5 stops under, mostly noise"}.` : ""}`
+      : "Nothing in this frame is clipped or crushed.";
+    return `<span class="legend-item"><span class="swatch zebra"></span>Clipped</span><span class="legend-item">${sw([58, 100, 206])}${tone.profile === "standard" ? "Crushed to black" : "More than 5 under"}</span><span class="legend-note">${esc(said)}</span>`;
+  }
+  return `<span class="legend-note">The full picture as recorded${tone.profile !== "standard" ? ", before any grade, so log footage looks flat" : ""}.</span>`;
+}
+
+function paintViewerState() {
+  const box = $("viewer-state");
+  if (!box) return;
+  const canvas = $("viewer-canvas");
+  if (viewer.error) {
+    canvas.hidden = true;
+    box.className = "viewer-state is-error";
+    box.innerHTML = `<div class="error-box error-small" role="alert">${icon("triangle")}<div><strong>This frame could not be shown</strong><p>${esc(viewer.error)}</p><p>Try another moment on the graphs. If every moment fails, check that the file opens in another player.</p></div></div>`;
+    return;
+  }
+  canvas.hidden = !viewer.frame;
+  if (viewer.loading && !viewer.frame) {
+    box.className = "viewer-state is-loading";
+    box.innerHTML = `<div class="loading-title"><span class="spinner" aria-hidden="true"></span>Reading the frame at <span class="num">${fmtClock(viewer.want || 0)}</span></div>`;
+  } else if (viewer.loading) {
+    box.className = "viewer-state is-busy";
+    box.innerHTML = `<span class="spinner" aria-hidden="true"></span>`;
+  } else if (!viewer.frame) {
+    box.className = "viewer-state is-empty";
+    box.innerHTML = `<div class="empty-small"><strong>No frame shown</strong>Point at a graph or a stretch below to see that moment.</div>`;
+  } else {
+    box.className = "viewer-state";
+    box.innerHTML = "";
+  }
+}
+
+function paintViewer() {
+  const canvas = $("viewer-canvas");
+  if (!canvas || !detail) return;
+  paintViewerState();
+  const f = viewer.frame;
+  if (f && !viewer.error) {
+    const { img, stats } = overlay(f, viewer.mode, detail.tone);
+    if (canvas.width !== f.w || canvas.height !== f.h) { canvas.width = f.w; canvas.height = f.h; }
+    canvas.getContext("2d").putImageData(img, 0, 0);
+    $("viewer-legend").innerHTML = legendHtml(viewer.mode, stats, detail.tone);
+  } else {
+    $("viewer-legend").innerHTML = "";
+  }
+  const t = viewer.frameT ?? viewer.want ?? viewer.pin;
+  const seg = detail.segments.find((s) => t >= s.start && t < s.end);
+  const held = Math.abs(t - viewer.pin) < 0.05;
+  $("viewer-time").innerHTML = `${held ? "Held at" : "At"} <span class="num">${fmtClock(t)}</span>${seg ? ` · ${esc(SEG_STATUS[seg.status][2])} · ${esc(CAMERA_WORDS[seg.camera] || "Still")}` : ""}`;
+}
+
+function setViewMode(mode) {
+  viewer.mode = mode;
+  try { localStorage.setItem("viewer-mode", mode); } catch (_) { /* a remembered view is a convenience */ }
+  for (const b of document.querySelectorAll("[data-viewmode]")) b.setAttribute("aria-checked", String(b.dataset.viewmode === mode));
+  paintViewer();
 }
 
 /* ---------- side panel ---------- */
@@ -522,20 +807,40 @@ async function refreshDetail() {
 const SLIDERS = {
   focus_min: ["s-focus", "o-focus"], exposure_min: ["s-exposure", "o-exposure"], stability_min: ["s-stability", "o-stability"],
   smoothing: ["s-smoothing", "o-smoothing"], min_length: ["s-min", "o-min"], max_length: ["s-max", "o-max"], max_per_clip: ["s-cap", "o-cap"],
+  focus_weight: ["s-wfocus", "o-wfocus"], exposure_weight: ["s-wexposure", "o-wexposure"], stability_weight: ["s-wstability", "o-wstability"],
 };
+const isWeight = (key) => key.endsWith("_weight");
+
+const DEFAULT_SELECTION = { focus_min: 0.5, exposure_min: 0.5, stability_min: 0.5, smoothing: 1, min_length: 2, max_length: 10, max_per_clip: 3, keep_moves_whole: true, focus_weight: 1, exposure_weight: 1, stability_weight: 1 };
+/* Presets set the sliders only; the camera filter and repeated takes stay as they are. */
+const PRESETS = [
+  { id: "balanced", label: "Balanced", hint: "The starting settings. Suits most footage, up to three selects from each clip.", v: DEFAULT_SELECTION },
+  { id: "long", label: "Long takes", hint: "For interviews, talks and locked-off shots: selects of 5 to 30 seconds, with focus and steadiness deciding which win. Sound is not checked, so a select can start mid-sentence.",
+    v: { focus_min: 0.6, exposure_min: 0.5, stability_min: 0.65, smoothing: 1.5, min_length: 5, max_length: 30, max_per_clip: 2, keep_moves_whole: false, focus_weight: 1, exposure_weight: 0.6, stability_weight: 0.8 } },
+  { id: "short", label: "Short clips", hint: "For reels and social edits: clean selects of 1.5 to 5 seconds, up to five from each clip.",
+    v: { focus_min: 0.55, exposure_min: 0.55, stability_min: 0.55, smoothing: 0.5, min_length: 1.5, max_length: 5, max_per_clip: 5, keep_moves_whole: false, focus_weight: 1, exposure_weight: 1, stability_weight: 1 } },
+  { id: "handheld", label: "Handheld and action", hint: "For run-and-gun, sport and walking shots: more shake is allowed, and sharpness decides which selects win.",
+    v: { focus_min: 0.45, exposure_min: 0.45, stability_min: 0.3, smoothing: 1.5, min_length: 1.5, max_length: 8, max_per_clip: 4, keep_moves_whole: true, focus_weight: 1, exposure_weight: 0.7, stability_weight: 0.4 } },
+  { id: "strict", label: "Only the cleanest", hint: "The single best moment of each clip, and only if it is clearly good. Expect some clips to have none.",
+    v: { focus_min: 0.7, exposure_min: 0.65, stability_min: 0.7, smoothing: 1, min_length: 2.5, max_length: 10, max_per_clip: 1, keep_moves_whole: true, focus_weight: 1, exposure_weight: 1, stability_weight: 1 } },
+];
+const presetMatching = (sel) => PRESETS.find((p) => Object.entries(p.v).every(([k, v]) => (typeof v === "boolean" ? !!sel[k] === v : Math.abs((sel[k] ?? DEFAULT_SELECTION[k]) - v) < 1e-4)));
 
 function sliderToValue(key, raw) {
   const v = Number(raw);
+  if (isWeight(key)) return v / 100;
   if (key.endsWith("_min") && !key.startsWith("min")) return v / 100;
   if (key === "max_per_clip") return v >= 21 ? 0 : v;
   return v;
 }
 function valueToSlider(key, v) {
+  if (isWeight(key)) return Math.round((v ?? 1) * 100);
   if (key.endsWith("_min") && !key.startsWith("min")) return Math.round(v * 100);
   if (key === "max_per_clip") return v === 0 ? 21 : v;
   return v;
 }
 function label(key, v) {
+  if (isWeight(key)) return String(Math.round((v ?? 1) * 100));
   if (key.endsWith("_min") && !key.startsWith("min")) return String(Math.round(v * 100));
   if (key === "smoothing") return v === 0 ? "Off" : `${v} s`;
   if (key === "max_per_clip") return v === 0 ? "No limit" : String(v);
@@ -557,6 +862,8 @@ function syncSide() {
     setFill(input);
   }
   $("keep-moves").checked = !!localSel.keep_moves_whole;
+  renderPresets();
+  renderFilters();
   const sr = $("sample-rate");
   if (document.activeElement !== sr) sr.value = String(state.sample_rate);
 
@@ -584,6 +891,34 @@ function syncSide() {
   $("export-hint").textContent = hasSelects
     ? `Writes four files side by side: .xml for Premiere Pro and DaVinci Resolve, .fcpxml for Final Cut Pro, an .edl, and a .csv spreadsheet. Timeline: ${ex.timeline_rate.label} fps${ex.timeline_rate.drop_frame_capable ? (ex.drop_frame ? " drop frame" : " non drop frame") : ""}, ${ex.resolution[0]}×${ex.resolution[1]}.`
     : "There are no selects to export yet. Add footage, or lower a threshold if every clip is analyzed.";
+}
+
+function renderPresets() {
+  const on = presetMatching(localSel);
+  const html = PRESETS.map((p) => `<button class="chip" aria-pressed="${on?.id === p.id}" data-preset="${p.id}">${esc(p.label)}</button>`).join("");
+  const box = $("presets");
+  if (box.dataset.html !== html) { box.innerHTML = html; box.dataset.html = html; }
+  $("preset-hint").textContent = on ? on.hint : "Your own settings. Pick a preset to start again from one.";
+}
+
+function renderFilters() {
+  const cam = localSel.camera || "any";
+  for (const b of document.querySelectorAll("[data-camera]")) b.setAttribute("aria-checked", String(b.dataset.camera === cam));
+  const a = state.aside || { camera: 0, repeats: 0, repeats_found: 0 };
+  $("camera-hint").textContent = cam === "any"
+    ? "Keep only stretches where the camera is still, or moving a certain way. Movement means sliding sideways or up and down, so a push-in or zoom reads as still."
+    : a.camera
+      ? `${plural(a.camera, "good stretch is", "good stretches are")} set aside because the camera does something else. Good stretches are cut where the camera starts or stops moving.`
+      : `Every good stretch so far shows ${FILTER_WORDS[cam]}. Good stretches are cut where the camera starts or stops moving.`;
+  const rep = $("set-aside-repeats");
+  rep.checked = !!localSel.set_aside_repeats;
+  $("repeats-hint").textContent = localSel.set_aside_repeats
+    ? a.repeats
+      ? `${plural(a.repeats, "repeated take is", "repeated takes are")} set aside. The best take of each shot stays, and each clip's next best stretch can take a freed place.`
+      : "No select looks like a better one in another clip, so nothing is set aside."
+    : a.repeats_found
+      ? `${plural(a.repeats_found, "select looks", "selects look")} like a better select in another clip, such as a second take from the same spot. Tick this to keep only the best take.`
+      : "Finds selects that look like a better select in another clip, such as a second take from the same spot, and keeps only the best.";
 }
 
 function profileHint() {
@@ -738,7 +1073,12 @@ function wireSliders() {
     pushSelection();
   });
   $("btn-reset").addEventListener("click", () => {
-    localSel = { focus_min: 0.5, exposure_min: 0.5, stability_min: 0.5, smoothing: 1, min_length: 2, max_length: 10, max_per_clip: 3, keep_moves_whole: true };
+    localSel = { ...localSel, ...DEFAULT_SELECTION, camera: "any", set_aside_repeats: false };
+    pushSelection();
+  });
+  $("set-aside-repeats").addEventListener("change", (e) => {
+    if (!localSel) return;
+    localSel.set_aside_repeats = e.target.checked;
     pushSelection();
   });
 }
@@ -968,6 +1308,21 @@ function wire() {
     else if (act === "stop-tracing") invoke("stop_tracing");
     else if (act === "fit") fitToEdits();
     else if (act === "retrace") invoke("retrace_finished_videos").then((s) => { state = s; renderAll(); });
+    else if (act === "prev-select") stepSelect(-1);
+    else if (act === "next-select") stepSelect(1);
+    else if (e.target.closest("[data-viewmode]")) setViewMode(e.target.closest("[data-viewmode]").dataset.viewmode);
+    else if (e.target.closest("[data-preset]")) {
+      const p = PRESETS.find((x) => x.id === e.target.closest("[data-preset]").dataset.preset);
+      if (p && localSel) { localSel = { ...localSel, ...p.v }; renderPresets(); pushSelection(); }
+    }
+    else if (e.target.closest("[data-camera]")) {
+      if (localSel) { localSel.camera = e.target.closest("[data-camera]").dataset.camera; renderFilters(); pushSelection(); }
+    }
+    else if (e.target.closest("tr[data-seg]")) {
+      const [a, b] = e.target.closest("tr[data-seg]").dataset.seg.split(":").map(Number);
+      pinAt((a + b) / 2);
+      $("main-panel").querySelector(".viewer")?.scrollIntoView({ block: "nearest", behavior: "smooth" });
+    }
     else if (act === "remove-finished") {
       const path = e.target.closest("[data-path]").dataset.path;
       invoke("remove_finished_video", { path }).then((s) => { state = s; renderAll(); });
@@ -1012,6 +1367,11 @@ function wire() {
     if (mod && e.key.toLowerCase() === "s") { e.preventDefault(); saveProject(e.shiftKey); }
     if (mod && e.key.toLowerCase() === "o") { e.preventDefault(); openProject(); }
     if (e.key === "Escape" && view.mode === "detail" && $("modal").hidden) { view = { mode: "list", clipId: null }; renderMain(); }
+    const typing = ["INPUT", "SELECT", "TEXTAREA"].includes(document.activeElement?.tagName);
+    if (view.mode === "detail" && detail && !typing && !mod && $("modal").hidden) {
+      if (e.key === "ArrowLeft" || e.key === "ArrowRight") { e.preventDefault(); pinAt(viewer.pin + (e.key === "ArrowLeft" ? -1 : 1) * (e.shiftKey ? 5 : 1)); }
+      if (e.key === "[" || e.key === "]") { e.preventDefault(); stepSelect(e.key === "[" ? -1 : 1); }
+    }
   });
   window.addEventListener("resize", () => { graphWidth = 0; if (view.mode === "detail") renderDetail(); });
   wireSliders();

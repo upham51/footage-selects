@@ -10,8 +10,14 @@
 //!    camera is still when there are any, never in the middle of a camera
 //!    move if it can be helped. With `keep_moves_whole`, a single camera move
 //!    up to twice `max_length` stays in one piece.
-//! 5. Each candidate is scored by the mean of its three smoothed scores. Only
-//!    the best `max_per_clip` are kept; the rest are dropped as over the limit.
+//! 5. Each candidate gets the camera movement it shows (still, a pan, a tilt
+//!    or another move). With a camera filter, good stretches are first cut
+//!    where the camera starts or stops moving, and candidates whose movement
+//!    does not match are set aside.
+//! 6. Each candidate is scored by a weighted mean of its three smoothed
+//!    scores. Only the best `max_per_clip` are kept; the rest are dropped as
+//!    over the limit. The project can set aside repeated takes across clips
+//!    before this last step (`project::Project::selections`).
 
 use crate::scores::{mean, ramp, ScoreSeries};
 use crate::tone::ExposureIssue;
@@ -34,6 +40,87 @@ pub struct SelectionSettings {
     pub max_per_clip: u32,
     /// Let one camera move run up to twice the longest select rather than cut it in two.
     pub keep_moves_whole: bool,
+    /// Which camera movement a select must show.
+    pub camera: CameraFilter,
+    /// How much each score counts when selects are ranked against each other,
+    /// 0 to 1. Thresholds are not affected.
+    pub focus_weight: f32,
+    pub exposure_weight: f32,
+    pub stability_weight: f32,
+    /// Set aside selects that look like a better select from another clip.
+    pub set_aside_repeats: bool,
+}
+
+/// Which camera movement a select must show.
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum CameraFilter {
+    #[default]
+    Any,
+    Still,
+    /// Any movement: pans, tilts and other moves.
+    Moving,
+    Pans,
+    Tilts,
+}
+
+/// The camera movement a segment shows. Movement is measured as sideways and
+/// up-and-down shift of the picture, so a push-in or zoom with little
+/// sideways movement reads as still.
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum CameraMove {
+    #[default]
+    Still,
+    PanLeft,
+    PanRight,
+    TiltUp,
+    TiltDown,
+    /// Moving, but not mostly one way: diagonal, wandering or orbiting.
+    Other,
+}
+
+impl CameraMove {
+    pub fn words(self) -> &'static str {
+        match self {
+            CameraMove::Still => "Still",
+            CameraMove::PanLeft => "Pan left",
+            CameraMove::PanRight => "Pan right",
+            CameraMove::TiltUp => "Tilt up",
+            CameraMove::TiltDown => "Tilt down",
+            CameraMove::Other => "Moving",
+        }
+    }
+}
+
+impl CameraFilter {
+    pub fn allows(self, m: CameraMove) -> bool {
+        match self {
+            CameraFilter::Any => true,
+            CameraFilter::Still => m == CameraMove::Still,
+            CameraFilter::Moving => m != CameraMove::Still,
+            CameraFilter::Pans => matches!(m, CameraMove::PanLeft | CameraMove::PanRight),
+            CameraFilter::Tilts => matches!(m, CameraMove::TiltUp | CameraMove::TiltDown),
+        }
+    }
+}
+
+/// Why a good segment was set aside.
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum AsideReason {
+    /// Its camera movement does not match the camera filter.
+    Camera,
+    /// It looks like a better select from another clip.
+    Repeat,
+}
+
+/// A select in another clip that a segment looks like.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub struct SimilarTo {
+    pub clip: u64,
+    pub start: f64,
+    pub end: f64,
 }
 
 impl Default for SelectionSettings {
@@ -47,7 +134,24 @@ impl Default for SelectionSettings {
             max_length: 10.0,
             max_per_clip: 3,
             keep_moves_whole: true,
+            camera: CameraFilter::Any,
+            focus_weight: 1.0,
+            exposure_weight: 1.0,
+            stability_weight: 1.0,
+            set_aside_repeats: false,
         }
+    }
+}
+
+impl SelectionSettings {
+    /// Weighted mean of three scores. Equal weights when all are zero.
+    pub fn rank_score(&self, focus: f32, exposure: f32, stability: f32) -> f32 {
+        let w = [self.focus_weight.max(0.0), self.exposure_weight.max(0.0), self.stability_weight.max(0.0)];
+        let sum = w[0] + w[1] + w[2];
+        if sum <= 1e-6 {
+            return (focus + exposure + stability) / 3.0;
+        }
+        (w[0] * focus + w[1] * exposure + w[2] * stability) / sum
     }
 }
 
@@ -61,6 +165,8 @@ pub enum SegmentStatus {
     OverLimit,
     /// At least one score is under its threshold.
     BelowThreshold,
+    /// Good enough, but set aside: see `Segment::aside`.
+    SetAside,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
@@ -73,7 +179,7 @@ pub struct Segment {
     pub focus: f32,
     pub exposure: f32,
     pub stability: f32,
-    /// Mean of the three scores; used to rank selects within a clip.
+    /// Weighted mean of the three scores; used to rank selects.
     pub score: f32,
     /// For `BelowThreshold`: which scores fell short, most frequent first.
     pub failed: Vec<String>,
@@ -86,6 +192,15 @@ pub struct Segment {
     /// The camera is moving for most of the segment.
     #[serde(default)]
     pub camera_move: bool,
+    /// Which way the camera moves, if it does.
+    #[serde(default)]
+    pub camera: CameraMove,
+    /// For `SetAside`: why.
+    #[serde(default)]
+    pub aside: Option<AsideReason>,
+    /// A better select in another clip that this one looks like.
+    #[serde(default)]
+    pub similar_to: Option<SimilarTo>,
 }
 
 impl Segment {
@@ -190,10 +305,40 @@ fn movingness(sm: &ScoreSeries, i: usize) -> f32 {
     sm.motion.get(i).map(|&v| ramp(v, STILL_SPEED, MOVING_SPEED)).unwrap_or(0.0)
 }
 
-fn make_segment(sm: &ScoreSeries, bounds: &[f64], start: f64, end: f64, status: SegmentStatus, exposure_min: f32) -> Segment {
+/// Share of the mean speed that must point one way for a move to count as
+/// a pan or a tilt rather than wandering.
+const DIRECTED_SHARE: f32 = 0.5;
+
+/// The camera movement over samples `idx`.
+fn camera_move_of(sm: &ScoreSeries, idx: &[usize]) -> CameraMove {
+    let moving: Vec<usize> = idx.iter().copied().filter(|&i| movingness(sm, i) >= 0.5).collect();
+    if moving.len() * 2 < idx.len().max(1) || moving.is_empty() {
+        return CameraMove::Still;
+    }
+    if sm.pan.len() != sm.len() || sm.tilt.len() != sm.len() {
+        return CameraMove::Other;
+    }
+    let n = moving.len() as f32;
+    let p = moving.iter().map(|&i| sm.pan[i]).sum::<f32>() / n;
+    let q = moving.iter().map(|&i| sm.tilt[i]).sum::<f32>() / n;
+    let speed = moving.iter().map(|&i| (sm.pan[i] * sm.pan[i] + sm.tilt[i] * sm.tilt[i]).sqrt()).sum::<f32>() / n;
+    if speed <= 1e-6 || (p * p + q * q).sqrt() < DIRECTED_SHARE * speed {
+        return CameraMove::Other;
+    }
+    if p.abs() >= 2.0 * q.abs() {
+        if p > 0.0 { CameraMove::PanRight } else { CameraMove::PanLeft }
+    } else if q.abs() >= 2.0 * p.abs() {
+        if q > 0.0 { CameraMove::TiltUp } else { CameraMove::TiltDown }
+    } else {
+        CameraMove::Other
+    }
+}
+
+fn make_segment(sm: &ScoreSeries, bounds: &[f64], start: f64, end: f64, status: SegmentStatus, s: &SelectionSettings) -> Segment {
+    let exposure_min = s.exposure_min;
     let idx = segment_indices(sm, bounds, start, end);
     let pick = |v: &Vec<f32>| mean(&idx.iter().map(|&i| v[i]).collect::<Vec<_>>());
-    let (f, e, s) = (pick(&sm.focus), pick(&sm.exposure), pick(&sm.stability));
+    let (f, e) = (pick(&sm.focus), pick(&sm.exposure));
     // Count issues where exposure fell short first; otherwise anywhere.
     let mut counts = [0usize; 6];
     let short: Vec<usize> = idx.iter().copied().filter(|&i| sm.exposure[i] < exposure_min).collect();
@@ -211,18 +356,23 @@ fn make_segment(sm: &ScoreSeries, bounds: &[f64], start: f64, end: f64, status: 
         None
     };
     let camera_move = !idx.is_empty() && idx.iter().map(|&i| movingness(sm, i)).sum::<f32>() / idx.len() as f32 >= 0.5;
+    let camera = if camera_move { camera_move_of(sm, &idx) } else { CameraMove::Still };
+    let st = pick(&sm.stability);
     Segment {
         start,
         end,
         status,
         focus: f,
         exposure: e,
-        stability: s,
-        score: (f + e + s) / 3.0,
+        stability: st,
+        score: s.rank_score(f, e, st),
         failed: Vec::new(),
         exposure_issue,
         key_stops,
         camera_move,
+        camera: if camera_move && camera == CameraMove::Still { CameraMove::Other } else { camera },
+        aside: None,
+        similar_to: None,
     }
 }
 
@@ -320,9 +470,88 @@ fn split(start: f64, end: f64, min: f64, max: f64) -> Vec<(f64, f64)> {
         .collect()
 }
 
+/// Pieces of a good run shorter than this are joined to a neighbour when a
+/// run is cut where the camera starts or stops moving, so a moment of
+/// hesitation does not chop a shot up.
+const CAMERA_PIECE_MIN: f64 = 1.0;
+
+/// Cut a good run where the camera starts or stops moving. Used only with a
+/// camera filter, so a still shot that turns into a pan gives one still
+/// candidate and one moving candidate instead of one mixed one.
+fn camera_pieces(sm: &ScoreSeries, bounds: &[f64], run: &Run) -> Vec<Run> {
+    let moving = |i: usize| movingness(sm, i) >= 0.5;
+    let mut pieces: Vec<(bool, Run)> = Vec::new();
+    let mut i = run.first;
+    while i <= run.last {
+        let m = moving(i);
+        let mut j = i;
+        while j < run.last && moving(j + 1) == m {
+            j += 1;
+        }
+        pieces.push((m, Run { first: i, last: j, start: bounds[i].max(run.start), end: bounds[j + 1].min(run.end) }));
+        i = j + 1;
+    }
+    // Join short pieces to the previous piece (or the next, for the first),
+    // then join neighbours that now share a state.
+    let mut merged: Vec<(bool, Run)> = Vec::new();
+    for (m, r) in pieces {
+        let short = r.end - r.start < CAMERA_PIECE_MIN;
+        match merged.last_mut() {
+            Some(prev) if short || prev.0 == m => {
+                prev.1.last = r.last;
+                prev.1.end = r.end;
+            }
+            _ => merged.push((m, r)),
+        }
+    }
+    if merged.len() > 1 && merged[0].1.end - merged[0].1.start < CAMERA_PIECE_MIN {
+        let first = merged.remove(0);
+        merged[0].1.first = first.1.first;
+        merged[0].1.start = first.1.start;
+    }
+    merged.into_iter().map(|(_, r)| r).collect()
+}
+
+/// Turn one good run into kept and too-short segments, splitting it when it
+/// is longer than the maximum.
+fn place_run(sm: &ScoreSeries, bounds: &[f64], run: &Run, s: &SelectionSettings, segments: &mut Vec<Segment>) {
+    let min = s.min_length.max(0.0) as f64;
+    let max = (s.max_length as f64).max(min);
+    if run.end - run.start + 1e-9 < min {
+        segments.push(make_segment(sm, bounds, run.start, run.end, SegmentStatus::TooShort, s));
+        return;
+    }
+    let needs_split = run.end - run.start > max + 1e-9;
+    let parts = if needs_split && sm.motion.len() == sm.len() {
+        split_at_rest(sm, bounds, run, min, max, s.keep_moves_whole).unwrap_or_else(|| split(run.start, run.end, min, max))
+    } else {
+        split(run.start, run.end, min, max)
+    };
+    // Trimmed ends from splitting are reported as too short.
+    let first_start = parts.first().map(|p| p.0).unwrap_or(run.start);
+    let last_end = parts.last().map(|p| p.1).unwrap_or(run.end);
+    if first_start - run.start > 1e-6 {
+        segments.push(make_segment(sm, bounds, run.start, first_start, SegmentStatus::TooShort, s));
+    }
+    for (a, b) in parts {
+        segments.push(make_segment(sm, bounds, a, b, SegmentStatus::Kept, s));
+    }
+    if run.end - last_end > 1e-6 {
+        segments.push(make_segment(sm, bounds, last_end, run.end, SegmentStatus::TooShort, s));
+    }
+}
+
 /// Run selection for one clip. `end_time` is the clip duration, or for a clip
 /// still being analysed, the time up to which it has been measured.
 pub fn select_clip(scores: &ScoreSeries, end_time: f64, s: &SelectionSettings) -> ClipSelection {
+    let mut sel = select_candidates(scores, end_time, s);
+    apply_cap(&mut sel.segments, s.max_per_clip);
+    sel
+}
+
+/// Everything `select_clip` does except the per-clip limit, so the project
+/// can set aside repeated takes across clips first.
+pub fn select_candidates(scores: &ScoreSeries, end_time: f64, s: &SelectionSettings) -> ClipSelection {
     let n = scores.len();
     if n == 0 {
         return ClipSelection::default();
@@ -336,6 +565,8 @@ pub fn select_clip(scores: &ScoreSeries, end_time: f64, s: &SelectionSettings) -
         key_stops: scores.key_stops.clone(),
         clipped: scores.clipped.clone(),
         issue: scores.issue.clone(),
+        pan: scores.pan.clone(),
+        tilt: scores.tilt.clone(),
     };
     let bounds = sample_bounds(&sm.t, end_time);
     let pass: Vec<bool> = (0..n)
@@ -367,8 +598,6 @@ pub fn select_clip(scores: &ScoreSeries, end_time: f64, s: &SelectionSettings) -
         i = j + 1;
     }
 
-    let min = s.min_length.max(0.0) as f64;
-    let max = (s.max_length as f64).max(min);
     let mut segments: Vec<Segment> = Vec::new();
     for (p, run) in &runs {
         if !*p {
@@ -385,7 +614,7 @@ pub fn select_clip(scores: &ScoreSeries, end_time: f64, s: &SelectionSettings) -
                 }
             }
             counts.sort_by(|a, b| b.1.cmp(&a.1));
-            let mut seg = make_segment(&sm, &bounds, run.start, run.end, SegmentStatus::BelowThreshold, s.exposure_min);
+            let mut seg = make_segment(&sm, &bounds, run.start, run.end, SegmentStatus::BelowThreshold, s);
             seg.failed = counts
                 .iter()
                 .filter(|c| c.1 > 0)
@@ -394,54 +623,49 @@ pub fn select_clip(scores: &ScoreSeries, end_time: f64, s: &SelectionSettings) -
             segments.push(seg);
             continue;
         }
-        if run.end - run.start + 1e-9 < min {
-            segments.push(make_segment(&sm, &bounds, run.start, run.end, SegmentStatus::TooShort, s.exposure_min));
-            continue;
-        }
-        let needs_split = run.end - run.start > max + 1e-9;
-        let parts = if needs_split && sm.motion.len() == n {
-            split_at_rest(&sm, &bounds, run, min, max, s.keep_moves_whole)
-                .unwrap_or_else(|| split(run.start, run.end, min, max))
+        if s.camera != CameraFilter::Any && sm.motion.len() == n {
+            for piece in camera_pieces(&sm, &bounds, run) {
+                place_run(&sm, &bounds, &piece, s, &mut segments);
+            }
         } else {
-            split(run.start, run.end, min, max)
-        };
-        // Trimmed ends from splitting are reported as too short.
-        let first_start = parts.first().map(|p| p.0).unwrap_or(run.start);
-        let last_end = parts.last().map(|p| p.1).unwrap_or(run.end);
-        if first_start - run.start > 1e-6 {
-            segments.push(make_segment(&sm, &bounds, run.start, first_start, SegmentStatus::TooShort, s.exposure_min));
-        }
-        for (a, b) in parts {
-            segments.push(make_segment(&sm, &bounds, a, b, SegmentStatus::Kept, s.exposure_min));
-        }
-        if run.end - last_end > 1e-6 {
-            segments.push(make_segment(&sm, &bounds, last_end, run.end, SegmentStatus::TooShort, s.exposure_min));
+            place_run(&sm, &bounds, run, s, &mut segments);
         }
     }
 
-    if s.max_per_clip > 0 {
-        let mut ranked: Vec<usize> = segments
-            .iter()
-            .enumerate()
-            .filter(|(_, g)| g.status == SegmentStatus::Kept)
-            .map(|(i, _)| i)
-            .collect();
-        // Highest score first; earlier segment wins a tie so results are stable.
-        ranked.sort_by(|&a, &b| {
-            segments[b]
-                .score
-                .partial_cmp(&segments[a].score)
-                .unwrap_or(std::cmp::Ordering::Equal)
-                .then(a.cmp(&b))
-        });
-        for &i in ranked.iter().skip(s.max_per_clip as usize) {
-            segments[i].status = SegmentStatus::OverLimit;
+    for g in segments.iter_mut() {
+        if g.status == SegmentStatus::Kept && !s.camera.allows(g.camera) {
+            g.status = SegmentStatus::SetAside;
+            g.aside = Some(AsideReason::Camera);
         }
     }
 
     ClipSelection {
         smoothed: sm,
         segments,
+    }
+}
+
+/// Keep only the best `cap` kept segments; the rest go over the limit. 0 means no limit.
+pub fn apply_cap(segments: &mut [Segment], cap: u32) {
+    if cap == 0 {
+        return;
+    }
+    let mut ranked: Vec<usize> = segments
+        .iter()
+        .enumerate()
+        .filter(|(_, g)| g.status == SegmentStatus::Kept)
+        .map(|(i, _)| i)
+        .collect();
+    // Highest score first; earlier segment wins a tie so results are stable.
+    ranked.sort_by(|&a, &b| {
+        segments[b]
+            .score
+            .partial_cmp(&segments[a].score)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then(a.cmp(&b))
+    });
+    for &i in ranked.iter().skip(cap as usize) {
+        segments[i].status = SegmentStatus::OverLimit;
     }
 }
 
@@ -456,6 +680,9 @@ pub enum NoSelectReason {
     Share { score: String, share: u32, needs: u32 },
     /// Some stretches pass, but all are shorter than the shortest select.
     TooShort { longest: f64, needs: f64 },
+    /// Good stretches exist, but all were set aside: `camera` by the camera
+    /// filter, `repeats` as repeated takes of selects in other clips.
+    SetAside { camera: usize, repeats: usize },
 }
 
 /// The main reason a clip got no selects, or None when it has some (or
@@ -465,6 +692,11 @@ pub fn no_select_reason(sel: &ClipSelection, s: &SelectionSettings) -> Option<No
     let sm = &sel.smoothed;
     if sm.is_empty() || sel.segments.iter().any(|g| g.status == SegmentStatus::Kept) {
         return None;
+    }
+    let aside = |r: AsideReason| sel.segments.iter().filter(|g| g.status == SegmentStatus::SetAside && g.aside == Some(r)).count();
+    let (camera, repeats) = (aside(AsideReason::Camera), aside(AsideReason::Repeat));
+    if camera + repeats > 0 {
+        return Some(NoSelectReason::SetAside { camera, repeats });
     }
     let scores = [
         ("focus", &sm.focus, s.focus_min),

@@ -5,7 +5,7 @@ use selects_engine::project::{FileStatus, ProfileSource, Project, ProjectClip};
 use selects_engine::taste::{report as taste_report, MissReason, TasteReport};
 use selects_engine::tone::{ToneProfile, ALL_PROFILES};
 use selects_engine::rate::{Rate, TIMELINE_RATES};
-use selects_engine::selection::{no_select_reason, ClipSelection, NoSelectReason, SegmentStatus, SelectionSettings, Summary};
+use selects_engine::selection::{no_select_reason, AsideReason, CameraMove, ClipSelection, NoSelectReason, SegmentStatus, SelectionSettings, SimilarTo, Summary};
 use serde::Serialize;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -42,6 +42,9 @@ pub struct SegDto {
     pub exposure: f32,
     pub stability: f32,
     pub score: f32,
+    pub camera: CameraMove,
+    /// A better select in another clip that this one looks like.
+    pub similar_to: Option<SimilarTo>,
 }
 
 #[derive(Serialize)]
@@ -77,6 +80,36 @@ pub struct ClipRow {
     pub choppy_shutter: bool,
     /// For an analysed clip with no selects: which score kept it out.
     pub no_select: Option<NoSelectReason>,
+    /// Good segments set aside by the camera filter or as repeated takes.
+    pub set_aside: usize,
+}
+
+/// Good segments across the project that the camera filter or the
+/// repeated-take check affect, for the side panel.
+#[derive(Serialize, Default)]
+pub struct AsideDto {
+    /// Set aside because their camera movement does not match the filter.
+    pub camera: usize,
+    /// Set aside as repeated takes.
+    pub repeats: usize,
+    /// Good segments that look like a better select in another clip,
+    /// whether or not they are set aside.
+    pub repeats_found: usize,
+}
+
+pub fn aside_counts(selections: &[ClipSelection]) -> AsideDto {
+    let mut a = AsideDto::default();
+    for g in selections.iter().flat_map(|s| s.segments.iter()) {
+        match (g.status, g.aside) {
+            (SegmentStatus::SetAside, Some(AsideReason::Camera)) => a.camera += 1,
+            (SegmentStatus::SetAside, Some(AsideReason::Repeat)) => a.repeats += 1,
+            _ => {}
+        }
+        if g.similar_to.is_some() && matches!(g.status, SegmentStatus::Kept | SegmentStatus::OverLimit | SegmentStatus::SetAside) {
+            a.repeats_found += 1;
+        }
+    }
+    a
 }
 
 #[derive(Serialize)]
@@ -153,6 +186,7 @@ pub struct TracingDto {
 pub struct StateDto {
     pub clips: Vec<ClipRow>,
     pub summary: Summary,
+    pub aside: AsideDto,
     pub selection: SelectionSettings,
     pub sample_rate: f64,
     pub export: ExportDto,
@@ -199,6 +233,8 @@ fn seg_dto(s: &selects_engine::selection::Segment) -> SegDto {
         exposure: s.exposure,
         stability: s.stability,
         score: s.score,
+        camera: s.camera,
+        similar_to: s.similar_to.clone(),
     }
 }
 
@@ -282,6 +318,7 @@ pub fn clip_rows(project: &Project, selections: &[ClipSelection], runner: &Runne
                 .is_some();
             let no_select = if status == "analyzed" { no_select_reason(sel, &project.selection) } else { None };
             ClipRow {
+                set_aside: sel.segments.iter().filter(|s| s.status == SegmentStatus::SetAside).count(),
                 no_select,
                 profile_label: resolved.profile.label().to_string(),
                 profile_is_log: resolved.profile.is_log(),
@@ -390,6 +427,7 @@ impl AppState {
         let path = self.project_path.lock().unwrap().clone();
         StateDto {
             clips: clip_rows(&project, &selections, &runner),
+            aside: aside_counts(&selections),
             summary,
             selection: project.selection.clone(),
             sample_rate: project.sample_rate,

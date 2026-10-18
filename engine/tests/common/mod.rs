@@ -94,6 +94,11 @@ fn lavfi_clip(name: &str, seconds: f32, vf: &str) -> PathBuf {
     out
 }
 
+/// A synthetic clip made like the shared fixtures, with your own crop or filter.
+pub fn custom_clip(name: &str, seconds: f32, vf: &str) -> PathBuf {
+    lavfi_clip(name, seconds, vf)
+}
+
 pub struct Footage {
     pub sharp: PathBuf,
     pub blurred: PathBuf,

@@ -51,6 +51,7 @@ fn main() {
             commands::set_sample_rate,
             commands::set_export,
             commands::clip_detail,
+            commands::clip_frame,
             commands::remove_clip,
             commands::new_project,
             commands::open_project,

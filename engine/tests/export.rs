@@ -53,6 +53,9 @@ fn seg(start: f64, end: f64, f: f32, e: f32, s: f32) -> Segment {
         exposure_issue: None,
         key_stops: None,
         camera_move: false,
+        camera: Default::default(),
+        aside: None,
+        similar_to: None,
     }
 }
 

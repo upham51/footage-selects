@@ -150,6 +150,9 @@ pub fn set_selection(state: State<'_, AppState>, selection: SelectionSettings) -
         s.smoothing = s.smoothing.clamp(0.0, 10.0);
         s.min_length = s.min_length.clamp(0.25, 60.0);
         s.max_length = s.max_length.clamp(s.min_length, 300.0);
+        s.focus_weight = s.focus_weight.clamp(0.0, 1.0);
+        s.exposure_weight = s.exposure_weight.clamp(0.0, 1.0);
+        s.stability_weight = s.stability_weight.clamp(0.0, 1.0);
         // keep_moves_whole is a plain on or off.
         if p.selection != s {
             p.selection = s;
@@ -244,6 +247,8 @@ pub struct ClipDetail {
     pub shutter_warning: Option<String>,
     /// Shots finished videos took from this clip: start, end, video name.
     pub used: Vec<(f64, f64, String)>,
+    /// How the frame viewer turns brightness into stops for false colour.
+    pub tone: selects_engine::frame::ToneGuide,
 }
 
 #[tauri::command]
@@ -253,8 +258,12 @@ pub fn clip_detail(state: State<'_, AppState>, id: u64) -> CmdResult<ClipDetail>
         .clip(id)
         .ok_or("That clip is no longer in the project. It may have been removed.")?;
     let fallback = p.fallback_profile;
-    let sel = c.select(&p.selection, fallback);
+    // Selection across the project, so repeated takes show here as in the list.
+    let index = p.clips.iter().position(|x| x.id == id).unwrap_or(0);
+    let sel = p.selections().swap_remove(index);
+    let resolved = c.resolved_profile(fallback);
     Ok(ClipDetail {
+        tone: selects_engine::frame::tone_guide(c, resolved.profile),
         id,
         name: c
             .info
@@ -272,7 +281,7 @@ pub fn clip_detail(state: State<'_, AppState>, id: u64) -> CmdResult<ClipDetail>
         sample_rate: c.analysis.as_ref().map(|a| a.sample_rate),
         decoder: c.analysis.as_ref().map(|a| a.decoder.clone()),
         analysis_seconds: c.analysis.as_ref().filter(|a| a.complete).map(|a| a.elapsed),
-        profile: c.resolved_profile(fallback),
+        profile: resolved,
         chosen_profile: c.profile,
         camera_profile: c
             .info
@@ -286,6 +295,25 @@ pub fn clip_detail(state: State<'_, AppState>, id: u64) -> CmdResult<ClipDetail>
             .and_then(|i| i.camera.as_ref().and_then(|n| n.shutter_warning(i.rate.fps()))),
         used: selects_engine::taste::moments_on_clip(&p, id),
     })
+}
+
+/// One full-colour still of a clip at `t` seconds, for the frame viewer.
+/// The reply is raw bytes: width and height as little-endian u32s, then RGBA pixels.
+#[tauri::command]
+pub async fn clip_frame(state: State<'_, AppState>, id: u64, t: f64) -> CmdResult<tauri::ipc::Response> {
+    let (info, path) = {
+        let p = state.project.lock().unwrap();
+        let c = p.clip(id).ok_or("That clip is no longer in the project. It may have been removed.")?;
+        let info = c.info.clone().ok_or("This clip could not be read, so there is no picture to show.")?;
+        (info, c.path.clone())
+    };
+    if !std::path::Path::new(&path).exists() {
+        return Err("The file is no longer where it was, so its picture cannot be shown. Its scores are kept.".into());
+    }
+    let still = tauri::async_runtime::spawn_blocking(move || selects_engine::frame::grab_still(&info, &path, t))
+        .await
+        .map_err(|e| e.to_string())??;
+    Ok(tauri::ipc::Response::new(still.to_bytes()))
 }
 
 /// The profile for clips whose camera does not say. Also remembered for new projects.
