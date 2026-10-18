@@ -28,6 +28,11 @@
       used: i === 1 ? [[dur * 0.3, dur * 0.3 + 4]] : i === 2 ? [[4, 9], [dur * 0.6, dur * 0.6 + 3]] : [],
       choppy_shutter: n === "DJI_0042.MP4",
       no_select: null,
+      light: ["golden_hour", "golden_hour", "golden_hour", "daylight", "harsh_midday", null, "blue_hour", null, null, "daylight", "night", "golden_hour"][i],
+      group: i < 4 ? "Day 1, evening, place 1" : i < 8 ? "Day 2, morning" : "Day 2, afternoon, place 2",
+      talking: n.startsWith("IMG"), sound: n === "IMG_4410.MOV" ? ["wind"] : [], crooked: n === "DJI_0051.MP4", flicker: n === "C0031.MP4", jello: n === "DJI_0042.MP4",
+      wb_note: n === "A001_C004_0612.mov" ? "A little warmer than the other clips from Day 1, evening, place 1. Match white balance before grading them together." : null,
+      marks: i === 0 ? 2 : 0,
     };
   });
   // Two analysed clips with nothing kept, to show the reason in the list.
@@ -35,7 +40,7 @@
   Object.assign(clips[9], { kept: [], no_select: { kind: "too_short", longest: 1.4, needs: 2 } });
   Object.assign(clips[11], { kept: [], no_select: { kind: "set_aside", camera: 0, repeats: 2 } });
   clips[0].set_aside = 1;
-  const sel = { focus_min: .5, exposure_min: .5, stability_min: .5, smoothing: 1, min_length: 2, max_length: 10, max_per_clip: 3, keep_moves_whole: true, camera: "any", focus_weight: 1, exposure_weight: 1, stability_weight: 1, set_aside_repeats: false };
+  const sel = { focus_min: .5, exposure_min: .5, stability_min: .5, smoothing: 1, min_length: 2, max_length: 10, max_per_clip: 3, keep_moves_whole: true, camera: "any", focus_weight: 1, exposure_weight: 1, stability_weight: 1, set_aside_repeats: false, snap_to_pauses: true, set_aside_sound_problems: false, light: "any" };
   const profiles = [["standard", "Standard (Rec. 709)"], ["s_log3", "Sony S-Log3"], ["v_log", "Panasonic V-Log"], ["c_log3", "Canon Log 3"], ["log_c3", "ARRI LogC3"], ["f_log", "Fujifilm F-Log"], ["f_log2", "Fujifilm F-Log2"], ["d_log", "DJI D-Log"], ["d_log_m", "DJI D-Log M"], ["apple_log", "Apple Log"], ["n_log", "Nikon N-Log"], ["hlg", "HLG"], ["generic_log", "Log, curve unknown"]].map(([id, label]) => ({ id, label, approximate: id === "d_log_m" || id === "generic_log" }));
   const rates = [["24000", 1001, "23.976"], [24, 1, "24"], [25, 1, "25"], [30000, 1001, "29.97"], [30, 1, "30"], [50, 1, "50"], [60000, 1001, "59.94"], [60, 1, "60"]].map(([n, d, l]) => ({ num: +n, den: d, label: l, drop_frame_capable: l === "29.97" || l === "59.94" }));
   const totalKept = clips.reduce((a, c) => a + c.kept.length, 0);
@@ -55,7 +60,10 @@
     ],
     taste: scene === "empty" ? null : { report: { videos: 2, used: 30, kept: 19, clips_used: 17, misses: [["stability", 6], ["too_short", 3], ["over_limit", 2]], selects_seconds: 1100, footage_seconds: 7400 }, miss_words: ["stability under the threshold", "shorter than the shortest select", "over the selects-per-clip limit"] },
     tracing: scene === "tracing" ? { name: "Porto teaser.mp4", done: 0, total: 2 } : null,
+    places: { location: null, clock_offset_minutes: null }, light_known: 8, talking_clips: 2, stills_progress: null,
+    reel: scene === "reel" ? { music_name: "Summer drive.mp3", music_seconds: 182, tempo: 124, beat_confidence: 0.82, reading: false, pace: "auto", length: 30, order: "as_shot", shape: "vertical" } : { music_name: null, music_seconds: null, tempo: null, beat_confidence: null, reading: false, pace: "auto", length: null, order: "as_shot", shape: "landscape" },
   };
+  state.export.handles = 1; state.export.stills = true;
   if (scene === "empty") { state.summary = { clips_total: 0, clips_analyzed: 0, clips_failed: 0, footage_seconds: 0, analyzed_seconds: 0, selects_count: 0, selects_seconds: 0 }; state.analysis.running = false; state.project_name = null; state.project_path = null; state.dirty = false; }
   function detail(id) {
     const c = clips.find((x) => x.id === id);
@@ -96,6 +104,10 @@
       camera: { source: "DJI_0042.SRT", camera: "DJI", lens: null, picture_profile: "dlog_m", iso: 100, shutter: 1 / 2000, aperture: 1.7, latitude: 38.71223, longitude: -9.13934, max_height: 84 },
       shutter_warning: "Shutter 1/2000 at 24 fps (about 4 degrees). Movement in this clip will look choppy; 1/48 is the usual choice. An ND filter lets you keep the slower shutter in bright light.",
       used: c.used.map(([a, b]) => [a, b, "Lisbon in 60 seconds.mp4"]),
+      scene: { id, utc: 1717261283, wall: 1717261283, offset_minutes: 60, time_source: "the camera's file DJI_0042.SRT", zone_estimated: true, place: [38.71223, -9.13934], place_source: "the camera's file DJI_0042.SRT", sun: 4.2, light: "golden_hour", group: "Day 1, evening, place 1", wb: [-2, 3], wb_note: null },
+      sound: { has_speech: true, talk_share: 0.42, wind_share: 0.3, clipped_events: 0, dropouts: [[12.4, 12.8]], noise_floor_db: -58, median_db: -24, silent: false },
+      talking: [[2, 5.5], [6.1, 9], [15, 22], [23.2, 27]], audio_error: null,
+      marks: [{ start: 30, end: 36, call: "keep", stars: 4 }],
       tone: { profile: "standard", clip_luma: 250, stops: Array.from({ length: 256 }, (_, v) => Math.round(Math.log2(Math.max(1e-5, Math.pow(v / 255, 2.4) * 0.9) / 0.18) * 100) / 100) } };
   }
   // A made-up landscape: sky, a clipped sun, a tree line and a textured field.
@@ -131,6 +143,13 @@
         if (cmd === "clip_detail") return detail(args.id);
         if (cmd === "clip_frame") { await new Promise((r) => setTimeout(r, 120)); if (scene === "frame-error") throw "The file is no longer where it was, so its picture cannot be shown. Its scores are kept."; return still(args.t); }
         if (cmd === "set_selection") { Object.assign(sel, args.selection); return state; }
+        if (cmd === "shoot_report") return { clips: 12, clips_analyzed: 9, footage_seconds: 7400, selects: 31, selects_seconds: 210, findings: [
+          { tone: "info", title: "What came out of the footage", body: "3 min of 2 h 03 min became selects (3%). 2 clips gave nothing usable at these settings.", rows: [] },
+          { tone: "warn", title: "Shutter speed and shake", body: "Clips shot around 180 degrees averaged 21 points steadier than clips shot faster than 180 degrees. Shake shows less with motion blur, so a slower shutter (with an ND filter in bright light) hides small movements.", rows: [["Around 180 degrees", 5, "stability 71"], ["Faster than 180 degrees", 4, "stability 50"]] },
+          { tone: "info", title: "Light", body: "Golden hour footage made it into the selects more often than its share of the shoot: it was 1.8 times as likely to be kept.", rows: [["Golden hour", 4, "22% of footage, 40% of selects"], ["Daylight", 3, "61% of footage, 48% of selects"]] },
+          { tone: "warn", title: "Crooked horizons", body: "3 selects have a horizon at least 1 degree off level, 1.6 degrees on average. Each is easy to fix with a small rotation in the edit.", rows: [] },
+        ] };
+        if (cmd === "plan_reel") return { tempo: 124, beats_per_cut: 4, length: 29.0, clips_used: 8, selects_available: 31, notes: [], beat_confidence: .82, shots: Array.from({ length: 15 }, (_, i) => ({ clip_id: (i % 8) + 1, clip_name: names[i % 8], source_start: 3 + i, source_end: 5 + i, at: i * 1.935, length: 1.935, score: .8, camera: i % 2 ? "pan_right" : "still", stars: 0, manual: i === 3, stretched: i === 7 })) };
         if (cmd === "fit_to_finished_videos") { await new Promise((r) => setTimeout(r, 400)); return { settings: { ...sel, stability_min: 0.35, min_length: 1.5 }, before: state.taste.report, after: { ...state.taste.report, kept: 27, selects_seconds: 1290 }, held_out_kept_share: 0.82, held_out_before_share: 0.63 }; }
         return state;
       },

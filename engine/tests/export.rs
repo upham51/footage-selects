@@ -345,7 +345,12 @@ fn check_fcpxml(tl: &Timeline, xml: &str) {
     let mut ids = std::collections::HashSet::new();
     for n in doc.descendants().filter(|n| n.is_element()) {
         let tag = n.tag_name().name();
+        // An audio-only asset (a reel's music) has no picture format.
+        let audio_only = tag == "asset" && n.attribute("hasVideo").is_none() && n.attribute("hasAudio") == Some("1");
         for a in required_attributes(tag) {
+            if audio_only && (*a == "hasVideo" || *a == "format") {
+                continue;
+            }
             assert!(n.attribute(*a).is_some(), "<{tag}> must have {a}");
         }
         for c in n.children().filter(|c| c.is_element()) {
@@ -397,7 +402,8 @@ fn check_fcpxml(tl: &Timeline, xml: &str) {
     // Connected selects on lane 1.
     let mut found = 0;
     for parent in &top {
-        for c in parent.children().filter(|c| c.has_tag_name("asset-clip")) {
+        // The music under a reel sits on lane -1 and is checked separately.
+        for c in parent.children().filter(|c| c.has_tag_name("asset-clip") && c.attribute("lane") != Some("-1")) {
             found += 1;
             assert_eq!(c.attribute("lane"), Some("1"));
             assert!(t(c, "duration").on_frame(r));
@@ -639,4 +645,158 @@ fn escapes_text_that_would_break_xml() {
         let doc = parse(&xml).unwrap();
         assert!(doc.descendants().any(|n| n.text() == Some("Tom & Jerry <rough> \"cut\"") || n.attribute("name") == Some("Tom & Jerry <rough> \"cut\"")));
     }
+}
+
+/* ---------------- extra time, keywords and reels ---------------- */
+
+#[test]
+fn extra_time_pads_each_select_without_overlapping_the_next() {
+    let r = Rate::new(24, 1);
+    let (mut p, sels) = project(r, None, TimelineLayout::FullClipsBelow);
+    p.export.handles = 2.0;
+    let tl = build_timeline(&p, &sels).0;
+    // Clip 1: selects at 2-5 s and 7.5-9 s. Two seconds before the first
+    // reaches the clip start; after it, the padding stops halfway to the next.
+    let a = &tl.selects[0];
+    let m = a.select.as_ref().unwrap();
+    assert_eq!(a.source_in, 0);
+    assert_eq!(m.lead, 48);
+    let b = &tl.selects[1];
+    assert!(a.source_out() <= b.source_in, "selects on one clip must not overlap: {} > {}", a.source_out(), b.source_in);
+    assert_eq!(a.source_out(), (120 + 180) / 2);
+    // The second select of clip 1 runs to the clip end (10 s = 240 frames).
+    assert_eq!(b.source_out(), 240);
+    assert_eq!(b.select.as_ref().unwrap().tail, 240 - 216);
+    // Markers sit where the select itself starts.
+    let xml = fcp7::write(&tl);
+    let doc = parse(&xml).unwrap();
+    let ins: Vec<i64> = doc.descendants().filter(|n| n.has_tag_name("marker")).map(|n| num(n, "in")).collect();
+    assert_eq!(ins[0], tl.selects[0].record_in + 48);
+    // The spreadsheet says how much was added.
+    let csv_text = csv::write(&tl);
+    let row = csv_fields(csv_text.trim_start_matches('\u{feff}').lines().nth(1).unwrap());
+    assert_eq!(row[row.len() - 2], "2.000");
+}
+
+#[test]
+fn keywords_reach_every_editor() {
+    let r = Rate::new(25, 1);
+    let (mut p, mut sels) = project(r, None, TimelineLayout::FullClipsBelow);
+    sels[0].segments[0].stars = 4;
+    sels[0].segments[0].manual = true;
+    sels[0].segments[0].camera = selects_engine::selection::CameraMove::PanLeft;
+    sels[0].segments[0].camera_move = true;
+    sels[0].segments[0].roll = Some(2.4);
+    p.export.timeline_name = "Keywords".into();
+    let tl = build_timeline(&p, &sels).0;
+    let m = tl.selects[0].select.as_ref().unwrap();
+    for k in ["Strong", "4 stars", "Kept by hand", "Pan left", "Pan", "Crooked horizon"] {
+        assert!(m.keywords.iter().any(|x| x == k), "missing {k} in {:?}", m.keywords);
+    }
+    assert!(m.marker_name().ends_with("4 stars, kept by hand"), "{}", m.marker_name());
+    assert!(m.marker_note().contains("rotate 2.4 degrees counter-clockwise"), "{}", m.marker_note());
+    // Premiere Pro and Resolve: logging fields on the select.
+    let xml = fcp7::write(&tl);
+    let doc = parse(&xml).unwrap();
+    let li = doc.descendants().find(|n| n.has_tag_name("logginginfo")).expect("logginginfo");
+    assert!(text(li, "lognote").contains("Pan left"));
+    assert_eq!(text(li, "good"), "TRUE");
+    // Final Cut Pro: keyword ranges on browser clips, a favorite, keywords on the timeline clip.
+    let fx = fcpxml::write(&tl);
+    let doc = parse(&fx).unwrap();
+    let event = doc.descendants().find(|n| n.has_tag_name("event")).unwrap();
+    let browser: Vec<_> = event.children().filter(|n| n.has_tag_name("asset-clip")).collect();
+    assert_eq!(browser.len(), 2, "one browser clip per source with selects");
+    assert!(browser[0].children().any(|n| n.has_tag_name("keyword") && n.attribute("value").unwrap().contains("Pan left")));
+    assert!(browser[0].children().any(|n| n.has_tag_name("rating") && n.attribute("value") == Some("favorite")));
+    check_fcpxml(&tl, &fx);
+    // EDL comment.
+    assert!(edl::write(&tl).contains("* KEYWORDS: Strong, 4 stars"));
+}
+
+fn reel_project() -> (Project, Vec<ClipSelection>) {
+    let r = Rate::new(25, 1);
+    let mut p = Project::new();
+    let mut sels = Vec::new();
+    for k in 0..6 {
+        let name = format!("C{k:04}.MP4");
+        let id = p.add_clip(&format!("/footage/{name}"), Ok(info(&name, r, 20.0, None, true))).unwrap();
+        let mut a = ClipAnalysis::empty(4.0, 480, 270);
+        a.complete = true;
+        p.clip_mut(id).unwrap().analysis = Some(a);
+        let mut s = seg(2.0, 6.0, 0.9 - k as f32 * 0.02, 0.8, 0.8);
+        s.camera_move = k % 2 == 1;
+        let mut t = seg(10.0, 13.0, 0.7, 0.7, 0.7);
+        t.camera_move = k % 2 == 0;
+        sels.push(selection(vec![s, t]));
+    }
+    p.export.timeline_rate = Some(r);
+    (p, sels)
+}
+
+fn grid(tempo: f64, seconds: f64) -> selects_engine::beats::BeatGrid {
+    let period = 60.0 / tempo;
+    let beats: Vec<f64> = (0..).map(|i| i as f64 * period).take_while(|&t| t < seconds).collect();
+    selects_engine::beats::BeatGrid {
+        tempo,
+        downbeats: (0..beats.len()).step_by(4).collect(),
+        strength: vec![1.0; beats.len()],
+        beats,
+        confidence: 0.9,
+    }
+}
+
+#[test]
+fn a_reel_fills_every_slot_on_the_beat_with_the_song_under_it() {
+    use selects_engine::reel::{plan, Pace, ReelOrder, ReelSettings, ReelShape};
+    let (p, sels) = reel_project();
+    let music = selects_engine::beats::MusicInfo { path: "/music/song.mp3".into(), name: "song.mp3".into(), duration: 60.0, sample_rate: 44100, channels: 2, codec: "mp3".into() };
+    let settings = ReelSettings { music: Some(music.clone()), grid: Some(grid(120.0, 60.0)), pace: Pace::EveryBar, length: Some(16.0), order: ReelOrder::BestFirst, shape: ReelShape::Vertical };
+    let scenes = selects_engine::scene::resolve(&p);
+    let r = plan(&p, &sels, &scenes, &settings).unwrap();
+    // 120 bpm, a cut every bar (2 s), 16 s: 8 shots of 2 s.
+    assert_eq!(r.beats_per_cut, 4);
+    assert_eq!(r.shots.len(), 8);
+    for (i, s) in r.shots.iter().enumerate() {
+        assert!((s.at - 2.0 * i as f64).abs() < 1e-6, "shot {i} at {}", s.at);
+        assert!((s.length - 2.0).abs() < 1e-6);
+        assert!(s.source_start >= 0.0 && s.source_end <= 20.0);
+        if i > 0 {
+            assert_ne!(s.clip_id, r.shots[i - 1].clip_id, "two shots in a row from one clip");
+        }
+    }
+    let tl = selects_engine::export::build_reel_timeline(&p, &r, &music, ReelShape::Vertical, "Reel");
+    assert_eq!((tl.width, tl.height), (1080, 1920));
+    assert!(tl.fill);
+    assert_eq!(tl.duration, 16 * 25);
+    let m = tl.music.as_ref().unwrap();
+    assert_eq!(m.frames_used, 16 * 25);
+    // Shots are back to back.
+    for w in tl.selects.windows(2) {
+        assert_eq!(w[0].record_out(), w[1].record_in);
+    }
+    let xml = fcp7::write(&tl);
+    assert!(xml.contains("file-music") && xml.contains("song.mp3"));
+    let fx = fcpxml::write(&tl);
+    assert!(fx.contains("audioRole=\"music\"") && fx.contains("adjust-conform"));
+    check_fcpxml(&tl, &fx);
+    assert!(edl::write(&tl).contains("MUSIC"));
+}
+
+#[test]
+fn as_shot_reels_keep_recording_order() {
+    use selects_engine::reel::{plan, Pace, ReelOrder, ReelSettings};
+    let (mut p, sels) = reel_project();
+    // Recording times from the clips' tags, in reverse of their order in the project.
+    for (k, c) in p.clips.iter_mut().enumerate() {
+        let info = c.info.as_mut().unwrap();
+        info.tags.creation_time = Some(format!("2024-06-01T1{}:00:00Z", 6 - k));
+    }
+    let music = selects_engine::beats::MusicInfo { path: "/m.wav".into(), name: "m.wav".into(), duration: 30.0, sample_rate: 48000, channels: 2, codec: "pcm".into() };
+    let settings = ReelSettings { music: Some(music), grid: Some(grid(120.0, 30.0)), pace: Pace::EveryBar, length: Some(12.0), order: ReelOrder::AsShot, ..Default::default() };
+    let scenes = selects_engine::scene::resolve(&p);
+    let r = plan(&p, &sels, &scenes, &settings).unwrap();
+    let order: Vec<usize> = r.shots.iter().map(|s| p.clips.iter().position(|c| c.id == s.clip_id).unwrap()).collect();
+    // Later clips in the project were recorded first, so the reel starts with them.
+    assert!(order.first() > order.last(), "{order:?}");
 }

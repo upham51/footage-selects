@@ -5,6 +5,7 @@ use selects_engine::project::{FileStatus, ProfileSource, Project, ProjectClip};
 use selects_engine::taste::{report as taste_report, MissReason, TasteReport};
 use selects_engine::tone::{ToneProfile, ALL_PROFILES};
 use selects_engine::rate::{Rate, TIMELINE_RATES};
+use selects_engine::scene::{ClipScene, PlaceSettings};
 use selects_engine::selection::{no_select_reason, AsideReason, CameraMove, ClipSelection, NoSelectReason, SegmentStatus, SelectionSettings, SimilarTo, Summary};
 use serde::Serialize;
 use std::path::PathBuf;
@@ -32,6 +33,11 @@ pub struct AppState {
     /// A finished video being read: (name, videos done, videos total).
     pub tracing: Mutex<Option<(String, usize, usize)>>,
     pub tracing_cancel: AtomicBool,
+    /// Stills being written: (done, total).
+    pub stills: Mutex<Option<(usize, usize)>>,
+    pub stills_cancel: AtomicBool,
+    /// A song's beats being found.
+    pub reading_music: AtomicBool,
 }
 
 #[derive(Serialize)]
@@ -82,6 +88,22 @@ pub struct ClipRow {
     pub no_select: Option<NoSelectReason>,
     /// Good segments set aside by the camera filter or as repeated takes.
     pub set_aside: usize,
+    /// The light it was recorded in, when the time and place are known.
+    pub light: Option<selects_engine::solar::Light>,
+    /// The scene group, such as "Day 1, morning".
+    pub group: Option<String>,
+    /// Someone talks in the clip.
+    pub talking: bool,
+    /// Sound problems anywhere in the clip.
+    pub sound: Vec<selects_engine::audio::AudioIssue>,
+    /// Picture problems among its good stretches.
+    pub crooked: bool,
+    pub flicker: bool,
+    pub jello: bool,
+    /// How its white balance compares with the rest of its scene.
+    pub wb_note: Option<String>,
+    /// Calls made by hand on this clip.
+    pub marks: usize,
 }
 
 /// Good segments across the project that the camera filter or the
@@ -95,6 +117,12 @@ pub struct AsideDto {
     /// Good segments that look like a better select in another clip,
     /// whether or not they are set aside.
     pub repeats_found: usize,
+    #[serde(default)]
+    pub light: usize,
+    #[serde(default)]
+    pub sound: usize,
+    #[serde(default)]
+    pub dropped: usize,
 }
 
 pub fn aside_counts(selections: &[ClipSelection]) -> AsideDto {
@@ -103,6 +131,9 @@ pub fn aside_counts(selections: &[ClipSelection]) -> AsideDto {
         match (g.status, g.aside) {
             (SegmentStatus::SetAside, Some(AsideReason::Camera)) => a.camera += 1,
             (SegmentStatus::SetAside, Some(AsideReason::Repeat)) => a.repeats += 1,
+            (SegmentStatus::SetAside, Some(AsideReason::Light)) => a.light += 1,
+            (SegmentStatus::SetAside, Some(AsideReason::Sound)) => a.sound += 1,
+            (SegmentStatus::SetAside, Some(AsideReason::Dropped)) => a.dropped += 1,
             _ => {}
         }
         if g.similar_to.is_some() && matches!(g.status, SegmentStatus::Kept | SegmentStatus::OverLimit | SegmentStatus::SetAside) {
@@ -148,6 +179,8 @@ pub struct ExportDto {
     pub timeline_name: String,
     pub rates: Vec<RateOption>,
     pub resolution: (u32, u32),
+    pub handles: f32,
+    pub stills: bool,
 }
 
 #[derive(Serialize)]
@@ -199,6 +232,26 @@ pub struct StateDto {
     pub finished_videos: Vec<FinishedDto>,
     pub taste: Option<TasteDto>,
     pub tracing: Option<TracingDto>,
+    pub places: PlaceSettings,
+    /// Clips whose light is known, and those whose time or place is missing.
+    pub light_known: usize,
+    pub reel: ReelDto,
+    pub stills_progress: Option<(usize, usize)>,
+    /// How many clips have someone talking.
+    pub talking_clips: usize,
+}
+
+#[derive(Serialize)]
+pub struct ReelDto {
+    pub music_name: Option<String>,
+    pub music_seconds: Option<f64>,
+    pub tempo: Option<f64>,
+    pub beat_confidence: Option<f32>,
+    pub reading: bool,
+    pub pace: selects_engine::reel::Pace,
+    pub length: Option<f64>,
+    pub order: selects_engine::reel::ReelOrder,
+    pub shape: selects_engine::reel::ReelShape,
 }
 
 pub fn profile_options() -> Vec<ProfileOption> {
@@ -291,13 +344,14 @@ fn clip_status(
     }
 }
 
-pub fn clip_rows(project: &Project, selections: &[ClipSelection], runner: &RunnerInner) -> Vec<ClipRow> {
+pub fn clip_rows(project: &Project, selections: &[ClipSelection], scenes: &[ClipScene], runner: &RunnerInner) -> Vec<ClipRow> {
     let all_used = selects_engine::taste::used_moments(project);
     project
         .clips
         .iter()
         .zip(selections.iter())
-        .map(|(c, sel)| {
+        .zip(scenes.iter())
+        .map(|((c, sel), scene)| {
             let (status, detail) = clip_status(c, project.sample_rate, runner);
             let info = c.info.as_ref();
             let path = std::path::Path::new(&c.path);
@@ -317,7 +371,31 @@ pub fn clip_rows(project: &Project, selections: &[ClipSelection], runner: &Runne
                 .and_then(|i| i.camera.as_ref().and_then(|n| n.shutter_warning(i.rate.fps())))
                 .is_some();
             let no_select = if status == "analyzed" { no_select_reason(sel, &project.selection) } else { None };
+            let good = || sel.segments.iter().filter(|g| g.status != SegmentStatus::BelowThreshold);
+            let summary = c.analysis.as_ref().and_then(|a| a.sound.as_ref()).map(|s| &s.summary);
+            let mut sound = Vec::new();
+            if let Some(sm) = summary {
+                use selects_engine::audio::AudioIssue;
+                if !sm.dropouts.is_empty() {
+                    sound.push(AudioIssue::Dropout);
+                }
+                if sm.clipped_events >= 3 {
+                    sound.push(AudioIssue::Clipped);
+                }
+                if sm.wind_share >= 0.2 {
+                    sound.push(AudioIssue::Wind);
+                }
+            }
             ClipRow {
+                light: scene.light,
+                group: scene.group.clone(),
+                talking: summary.map(|s| s.has_speech).unwrap_or(false),
+                sound,
+                crooked: sel.kept().any(|g| g.crooked()),
+                flicker: good().any(|g| g.flickers()),
+                jello: good().any(|g| g.jello()),
+                wb_note: scene.wb_note.clone(),
+                marks: c.marks.len(),
                 set_aside: sel.segments.iter().filter(|s| s.status == SegmentStatus::SetAside).count(),
                 no_select,
                 profile_label: resolved.profile.label().to_string(),
@@ -416,6 +494,8 @@ pub fn export_dto(project: &Project) -> ExportDto {
         timeline_name: project.export.timeline_name.clone(),
         rates: TIMELINE_RATES.iter().map(|r| rate_option(*r)).collect(),
         resolution: project.most_common_resolution(),
+        handles: project.export.handles,
+        stills: project.export.stills,
     }
 }
 
@@ -423,10 +503,27 @@ impl AppState {
     pub fn snapshot(&self) -> StateDto {
         let project = self.project.lock().unwrap();
         let runner = self.runner.lock().unwrap();
-        let (selections, summary) = project.select_all();
+        let scenes = selects_engine::scene::resolve(&project);
+        let (selections, summary) = project.select_all_with(&scenes);
         let path = self.project_path.lock().unwrap().clone();
+        let rows = clip_rows(&project, &selections, &scenes, &runner);
         StateDto {
-            clips: clip_rows(&project, &selections, &runner),
+            light_known: scenes.iter().filter(|s| s.light.is_some()).count(),
+            talking_clips: rows.iter().filter(|r| r.talking).count(),
+            places: project.places.clone(),
+            reel: ReelDto {
+                music_name: project.reel.music.as_ref().map(|m| m.name.clone()),
+                music_seconds: project.reel.music.as_ref().map(|m| m.duration),
+                tempo: project.reel.grid.as_ref().filter(|g| g.tempo > 0.0).map(|g| (g.tempo * 10.0).round() / 10.0),
+                beat_confidence: project.reel.grid.as_ref().map(|g| g.confidence),
+                reading: self.reading_music.load(Ordering::Relaxed),
+                pace: project.reel.pace,
+                length: project.reel.length,
+                order: project.reel.order,
+                shape: project.reel.shape,
+            },
+            stills_progress: *self.stills.lock().unwrap(),
+            clips: rows,
             aside: aside_counts(&selections),
             summary,
             selection: project.selection.clone(),

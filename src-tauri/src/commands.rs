@@ -7,7 +7,7 @@ use selects_engine::project::{Project, TimelineLayout, PROJECT_EXTENSION};
 use selects_engine::rate::Rate;
 use selects_engine::scores::ScoreSeries;
 use selects_engine::project::ResolvedProfile;
-use selects_engine::selection::{Segment, SelectionSettings};
+use selects_engine::selection::{Call, Mark, Segment, SelectionSettings};
 use selects_engine::sidecar::CameraNotes;
 use selects_engine::taste::FitResult;
 use selects_engine::tone::ToneProfile;
@@ -203,6 +203,10 @@ pub struct ExportInput {
     pub drop_frame: Option<bool>,
     pub layout: TimelineLayout,
     pub timeline_name: String,
+    #[serde(default)]
+    pub handles: f32,
+    #[serde(default)]
+    pub stills: bool,
 }
 
 #[tauri::command]
@@ -215,6 +219,8 @@ pub fn set_export(state: State<'_, AppState>, export: ExportInput) -> StateDto {
         p.export.layout = export.layout;
         let name = export.timeline_name.trim();
         p.export.timeline_name = if name.is_empty() { "Selects".into() } else { name.to_string() };
+        p.export.handles = export.handles.clamp(0.0, 10.0);
+        p.export.stills = export.stills;
         if p.export != before {
             state.dirty.store(true, Ordering::Relaxed);
         }
@@ -249,6 +255,15 @@ pub struct ClipDetail {
     pub used: Vec<(f64, f64, String)>,
     /// How the frame viewer turns brightness into stops for false colour.
     pub tone: selects_engine::frame::ToneGuide,
+    /// When and where it was recorded, its light and scene.
+    pub scene: Option<selects_engine::scene::ClipScene>,
+    /// What the sound check found.
+    pub sound: Option<selects_engine::audio::AudioSummary>,
+    /// Stretches with someone talking.
+    pub talking: Vec<(f64, f64)>,
+    pub audio_error: Option<String>,
+    /// Calls made by hand.
+    pub marks: Vec<Mark>,
 }
 
 #[tauri::command]
@@ -260,9 +275,16 @@ pub fn clip_detail(state: State<'_, AppState>, id: u64) -> CmdResult<ClipDetail>
     let fallback = p.fallback_profile;
     // Selection across the project, so repeated takes show here as in the list.
     let index = p.clips.iter().position(|x| x.id == id).unwrap_or(0);
-    let sel = p.selections().swap_remove(index);
+    let scenes = selects_engine::scene::resolve(&p);
+    let sel = p.selections_with(Some(&scenes)).swap_remove(index);
     let resolved = c.resolved_profile(fallback);
+    let sound_map = c.analysis.as_ref().and_then(|a| a.sound.as_ref());
     Ok(ClipDetail {
+        scene: scenes.get(index).cloned(),
+        sound: sound_map.map(|s| s.summary.clone()),
+        talking: sound_map.map(|s| s.talking.clone()).unwrap_or_default(),
+        audio_error: c.analysis.as_ref().and_then(|a| a.audio_error.clone()),
+        marks: c.marks.clone(),
         tone: selects_engine::frame::tone_guide(c, resolved.profile),
         id,
         name: c
@@ -349,6 +371,237 @@ pub fn set_clip_profile(state: State<'_, AppState>, id: u64, profile: Option<Ton
         }
     }
     Ok(state.snapshot())
+}
+
+/// Keep, drop or clear a stretch of a clip by hand. Marks overlapping the
+/// stretch are replaced. Stars apply to kept stretches.
+#[tauri::command]
+pub fn mark_stretch(state: State<'_, AppState>, id: u64, start: f64, end: f64, call: Option<Call>, stars: u8) -> CmdResult<StateDto> {
+    {
+        let mut p = state.project.lock().unwrap();
+        let c = p.clip_mut(id).ok_or("That clip is no longer in the project. It may have been removed.")?;
+        let (a, b) = (start.min(end).max(0.0), start.max(end));
+        if b - a < 0.05 {
+            return Err("That stretch is too short to mark. Choose a longer stretch.".into());
+        }
+        c.marks.retain(|m| m.end <= a + 1e-6 || m.start >= b - 1e-6);
+        if let Some(call) = call {
+            c.marks.push(Mark { start: a, end: b, call, stars: if call == Call::Keep { stars.min(5) } else { 0 } });
+            c.marks.sort_by(|x, y| x.start.partial_cmp(&y.start).unwrap_or(std::cmp::Ordering::Equal));
+        }
+        state.dirty.store(true, Ordering::Relaxed);
+    }
+    Ok(state.snapshot())
+}
+
+/// Where the footage was shot and the cameras' clock zone, for clips that do not say.
+#[tauri::command]
+pub fn set_places(state: State<'_, AppState>, location: Option<(f64, f64)>, clock_offset_minutes: Option<i32>) -> CmdResult<StateDto> {
+    if let Some((lat, lon)) = location {
+        if !(-90.0..=90.0).contains(&lat) || !(-180.0..=180.0).contains(&lon) {
+            return Err("That place is not on the map: latitude runs from -90 to 90 and longitude from -180 to 180. Nothing was changed.".into());
+        }
+    }
+    {
+        let mut p = state.project.lock().unwrap();
+        let next = selects_engine::scene::PlaceSettings { location, clock_offset_minutes: clock_offset_minutes.map(|o| o.clamp(-12 * 60, 14 * 60)) };
+        if p.places != next {
+            p.places = next;
+            state.dirty.store(true, Ordering::Relaxed);
+        }
+    }
+    Ok(state.snapshot())
+}
+
+#[tauri::command]
+pub async fn shoot_report(app: AppHandle) -> selects_engine::report::ShootReport {
+    let snapshot = app.state::<AppState>().project.lock().unwrap().clone();
+    tauri::async_runtime::spawn_blocking(move || selects_engine::report::shoot_report(&snapshot)).await.unwrap_or_default()
+}
+
+/// Save the shoot report as a page.
+#[tauri::command]
+pub async fn save_report(app: AppHandle) -> CmdResult<Option<String>> {
+    let state = app.state::<AppState>();
+    let (snapshot, name) = {
+        let p = state.project.lock().unwrap();
+        (p.clone(), state.project_path.lock().unwrap().as_ref().and_then(|p| p.file_stem()).map(|s| s.to_string_lossy().to_string()).unwrap_or_else(|| "Shoot".into()))
+    };
+    let mut dialog = app.dialog().file();
+    if let Some(dir) = save_folder(&app) {
+        dialog = dialog.set_directory(dir);
+    }
+    let Some(picked) = dialog.set_title("Save the shoot report").set_file_name(format!("{name} shoot report.html")).add_filter("Web page", &["html"]).blocking_save_file() else {
+        return Ok(None);
+    };
+    let mut path = picked.into_path().map_err(|e| e.to_string())?;
+    if path.extension().map(|e| e != "html").unwrap_or(true) {
+        path.set_extension("html");
+    }
+    let r = selects_engine::report::shoot_report(&snapshot);
+    std::fs::write(&path, selects_engine::report::report_html(&format!("{name} shoot report"), &r))
+        .map_err(|e| format!("The report could not be saved ({e}). Nothing was written. Choose a folder you can write to."))?;
+    Ok(Some(path.to_string_lossy().to_string()))
+}
+
+#[derive(Serialize)]
+pub struct StillsResult {
+    pub folder: String,
+    pub sheet: String,
+    pub written: usize,
+    pub failed: Vec<(String, String)>,
+    pub cancelled: bool,
+}
+
+fn write_stills(app: &AppHandle, project: &Project, parent: &std::path::Path, name: &str) -> CmdResult<StillsResult> {
+    let state = app.state::<AppState>();
+    state.stills_cancel.store(false, Ordering::Relaxed);
+    *state.stills.lock().unwrap() = Some((0, 0));
+    let _ = app.emit(EVENT_STATE, ());
+    let r = selects_engine::stills::export_stills(project, parent, name, &state.stills_cancel, |d, t| {
+        *state.stills.lock().unwrap() = Some((d, t));
+        let _ = app.emit("stills-progress", serde_json::json!({"done": d, "total": t}));
+    });
+    *state.stills.lock().unwrap() = None;
+    let _ = app.emit(EVENT_STATE, ());
+    let w = r?;
+    Ok(StillsResult {
+        folder: w.folder.to_string_lossy().to_string(),
+        sheet: w.sheet.to_string_lossy().to_string(),
+        written: w.written,
+        failed: w.failed,
+        cancelled: w.cancelled,
+    })
+}
+
+/// Stills of the best frame of every select and a contact sheet, in a folder the person picks.
+#[tauri::command]
+pub async fn export_stills(app: AppHandle) -> CmdResult<Option<StillsResult>> {
+    let state = app.state::<AppState>();
+    if state.stills.lock().unwrap().is_some() {
+        return Err("Stills are already being written. Wait for them to finish.".into());
+    }
+    let (project, name) = {
+        let p = state.project.lock().unwrap();
+        (p.clone(), p.export.timeline_name.clone())
+    };
+    let mut dialog = app.dialog().file();
+    if let Some(dir) = save_folder(&app) {
+        dialog = dialog.set_directory(dir);
+    }
+    let Some(picked) = dialog.set_title("Choose where the stills folder goes").blocking_pick_folder() else {
+        return Ok(None);
+    };
+    let parent = picked.into_path().map_err(|e| e.to_string())?;
+    let app2 = app.clone();
+    tauri::async_runtime::spawn_blocking(move || write_stills(&app2, &project, &parent, &name)).await.map_err(|e| e.to_string())?.map(Some)
+}
+
+#[tauri::command]
+pub fn stop_stills(state: State<'_, AppState>) {
+    state.stills_cancel.store(true, Ordering::Relaxed);
+}
+
+/// Choose a song for a reel and find its beats.
+#[tauri::command]
+pub async fn choose_music(app: AppHandle) -> CmdResult<Option<StateDto>> {
+    let Some(picked) = app
+        .dialog()
+        .file()
+        .set_title("Choose a song to cut the reel to")
+        .add_filter("Music", &["mp3", "m4a", "aac", "wav", "aif", "aiff", "flac", "ogg", "opus", "mp4", "mov"])
+        .blocking_pick_file()
+    else {
+        return Ok(None);
+    };
+    let path = picked.into_path().map_err(|e| e.to_string())?;
+    let state = app.state::<AppState>();
+    if state.reading_music.swap(true, Ordering::Relaxed) {
+        return Err("A song is already being read. Wait for it to finish.".into());
+    }
+    let _ = app.emit(EVENT_STATE, ());
+    let never = std::sync::atomic::AtomicBool::new(false);
+    let found = tauri::async_runtime::spawn_blocking(move || selects_engine::beats::beat_grid(&path, &never)).await.map_err(|e| e.to_string());
+    state.reading_music.store(false, Ordering::Relaxed);
+    let (music, grid) = match found {
+        Ok(Ok(v)) => v,
+        Ok(Err(e)) | Err(e) => {
+            let _ = app.emit(EVENT_STATE, ());
+            return Err(e);
+        }
+    };
+    {
+        let mut p = state.project.lock().unwrap();
+        p.reel.music = Some(music);
+        p.reel.grid = Some(grid);
+        state.dirty.store(true, Ordering::Relaxed);
+    }
+    Ok(Some(state.snapshot()))
+}
+
+#[derive(Deserialize)]
+pub struct ReelInput {
+    pub pace: selects_engine::reel::Pace,
+    pub length: Option<f64>,
+    pub order: selects_engine::reel::ReelOrder,
+    pub shape: selects_engine::reel::ReelShape,
+}
+
+#[tauri::command]
+pub fn set_reel(state: State<'_, AppState>, reel: ReelInput) -> StateDto {
+    {
+        let mut p = state.project.lock().unwrap();
+        let r = &mut p.reel;
+        let length = reel.length.map(|l| l.clamp(3.0, 3600.0));
+        if r.pace != reel.pace || r.length != length || r.order != reel.order || r.shape != reel.shape {
+            r.pace = reel.pace;
+            r.length = length;
+            r.order = reel.order;
+            r.shape = reel.shape;
+            state.dirty.store(true, Ordering::Relaxed);
+        }
+    }
+    state.snapshot()
+}
+
+fn current_plan(p: &Project) -> CmdResult<selects_engine::reel::ReelPlan> {
+    let scenes = selects_engine::scene::resolve(p);
+    let (sels, _) = p.select_all_with(&scenes);
+    selects_engine::reel::plan(p, &sels, &scenes, &p.reel)
+}
+
+/// The reel the current selects and song would make, without writing anything.
+#[tauri::command]
+pub async fn plan_reel(app: AppHandle) -> CmdResult<selects_engine::reel::ReelPlan> {
+    let snapshot = app.state::<AppState>().project.lock().unwrap().clone();
+    tauri::async_runtime::spawn_blocking(move || current_plan(&snapshot)).await.map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+pub async fn export_reel(app: AppHandle) -> CmdResult<Option<ExportResult>> {
+    let state = app.state::<AppState>();
+    let project = state.project.lock().unwrap().clone();
+    let plan = current_plan(&project)?;
+    let music = project.reel.music.clone().ok_or("Choose a song first.")?;
+    let name = format!("{} reel", project.export.timeline_name.trim());
+    let safe: String = name.chars().map(|c| if c.is_alphanumeric() || c == ' ' || c == '-' || c == '_' { c } else { '_' }).collect();
+    let mut dialog = app.dialog().file();
+    if let Some(dir) = save_folder(&app) {
+        dialog = dialog.set_directory(dir);
+    }
+    let Some(picked) = dialog.set_title("Export reel (four files are written side by side)").set_file_name(format!("{}.xml", safe.trim())).blocking_save_file() else {
+        return Ok(None);
+    };
+    let base = picked.into_path().map_err(|e| e.to_string())?.with_extension("");
+    let tl = selects_engine::export::build_reel_timeline(&project, &plan, &music, project.reel.shape, &name);
+    let written = selects_engine::export::write_timeline(&tl, &base, plan.notes.clone()).map_err(|e| e.to_string())?;
+    Ok(Some(ExportResult {
+        folder: base.parent().map(|p| p.to_string_lossy().to_string()).unwrap_or_default(),
+        files: written.files.iter().map(|p| p.file_name().unwrap_or_default().to_string_lossy().to_string()).collect(),
+        selects: written.selects,
+        warnings: written.warnings,
+        stills: None,
+    }))
 }
 
 #[derive(Serialize)]
@@ -565,6 +818,8 @@ pub struct ExportResult {
     pub files: Vec<String>,
     pub selects: usize,
     pub warnings: Vec<String>,
+    /// Stills written alongside, when asked for.
+    pub stills: Option<StillsResult>,
 }
 
 #[tauri::command]
@@ -592,7 +847,22 @@ pub async fn export_timeline(app: AppHandle) -> CmdResult<Option<ExportResult>> 
     let path = picked.into_path().map_err(|e| e.to_string())?;
     let base = path.with_extension("");
     let written = selects_engine::export::write_all(&project, &base).map_err(|e| e.to_string())?;
+    let mut stills = None;
+    let mut warnings = written.warnings.clone();
+    if project.export.stills {
+        if let Some(parent) = base.parent().map(|p| p.to_path_buf()) {
+            let app2 = app.clone();
+            let proj = project.clone();
+            let name2 = name.clone();
+            match tauri::async_runtime::spawn_blocking(move || write_stills(&app2, &proj, &parent, &name2)).await {
+                Ok(Ok(r)) => stills = Some(r),
+                Ok(Err(e)) => warnings.push(format!("The timeline was written, but the stills were not: {e}")),
+                Err(e) => warnings.push(format!("The timeline was written, but the stills were not: {e}")),
+            }
+        }
+    }
     Ok(Some(ExportResult {
+        stills,
         folder: base
             .parent()
             .map(|p| p.to_string_lossy().to_string())
@@ -603,7 +873,7 @@ pub async fn export_timeline(app: AppHandle) -> CmdResult<Option<ExportResult>> 
             .map(|p| p.file_name().unwrap_or_default().to_string_lossy().to_string())
             .collect(),
         selects: written.selects,
-        warnings: written.warnings,
+        warnings,
     }))
 }
 

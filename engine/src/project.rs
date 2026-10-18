@@ -479,7 +479,13 @@ impl Project {
 
     /// Selection for every clip, in project order, plus the summary line.
     pub fn select_all(&self) -> (Vec<ClipSelection>, Summary) {
-        let sels = self.selections();
+        let scenes = crate::scene::resolve(self);
+        self.select_all_with(&scenes)
+    }
+
+    /// `select_all` with the clips' scenes already worked out.
+    pub fn select_all_with(&self, scenes: &[crate::scene::ClipScene]) -> (Vec<ClipSelection>, Summary) {
+        let sels = self.selections_with(Some(scenes));
         let mut out = Vec::with_capacity(self.clips.len());
         let mut sum = Summary {
             clips_total: self.clips.len(),

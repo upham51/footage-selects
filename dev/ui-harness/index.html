@@ -13,6 +13,7 @@
       <span class="project-line" id="project-line">New project</span>
     </div>
     <div class="topbar-actions">
+      <button class="btn btn-quiet" id="btn-report">Shoot report</button>
       <button class="btn btn-quiet" id="btn-new">New project</button>
       <button class="btn btn-quiet" id="btn-open">Open project</button>
       <button class="btn btn-secondary" id="btn-save">Save project</button>
@@ -75,6 +76,10 @@
           <input type="checkbox" id="keep-moves"> <span>Keep camera moves whole</span>
         </label>
         <p class="hint">Long selects are always cut where the camera is still. With this on, one pan or push can run up to twice the longest select instead of being cut in the middle.</p>
+        <label class="check">
+          <input type="checkbox" id="snap-pauses"> <span>Start and end in a pause when someone talks</span>
+        </label>
+        <p class="hint" id="snap-hint"></p>
         <div class="field-label sub-head">Which selects win</div>
         <p class="hint">When a clip has more good stretches than it keeps, these decide which stay. Thresholds are not affected.</p>
         <div class="slider" data-key="focus_weight" data-kind="weight">
@@ -106,6 +111,28 @@
           <input type="checkbox" id="set-aside-repeats"> <span>Set aside repeated takes</span>
         </label>
         <p class="hint" id="repeats-hint"></p>
+        <div class="field-label sub-head" id="light-label">Light</div>
+        <div class="chips" id="light-filter" role="radiogroup" aria-labelledby="light-label">
+          <button class="chip" role="radio" data-light="any">Any</button>
+          <button class="chip" role="radio" data-light="golden_hour">Golden hour</button>
+          <button class="chip" role="radio" data-light="blue_hour">Blue hour</button>
+          <button class="chip" role="radio" data-light="daylight">Daylight</button>
+          <button class="chip" role="radio" data-light="night">Night</button>
+        </div>
+        <p class="hint" id="light-hint"></p>
+        <label class="check">
+          <input type="checkbox" id="set-aside-sound"> <span>Set aside selects with sound problems</span>
+        </label>
+        <p class="hint" id="sound-hint"></p>
+      </div>
+
+      <div class="side-section">
+        <h2 class="eyebrow">Places and time</h2>
+        <label class="field-label" for="place-input">Where you shot, for clips that do not record it</label>
+        <input id="place-input" class="input" type="text" spellcheck="false" placeholder="Latitude, longitude, for example 38.7223, -9.1393">
+        <label class="field-label" for="clock-zone">Camera clock time zone</label>
+        <select id="clock-zone" class="input"></select>
+        <p class="hint" id="places-hint"></p>
       </div>
 
       <div class="side-section">
@@ -143,13 +170,32 @@
         <label class="check" id="drop-frame-row">
           <input type="checkbox" id="drop-frame"> <span>Drop frame timecode</span>
         </label>
+        <label class="field-label" for="handles">Extra time around each select</label>
+        <select id="handles" class="input">
+          <option value="0">None</option>
+          <option value="0.5">0.5 seconds</option>
+          <option value="1">1 second</option>
+          <option value="2">2 seconds</option>
+          <option value="3">3 seconds</option>
+        </select>
+        <p class="hint">Room for transitions and speed ramps. Markers still sit where each select starts, and scores are for the select itself.</p>
         <fieldset class="radios">
           <legend class="field-label">Layout</legend>
           <label class="radio"><input type="radio" name="layout" value="full_clips_below"> <span>Full clips on track 1, each select above its source on track 2</span></label>
           <label class="radio"><input type="radio" name="layout" value="selects_only"> <span>Selects only, back to back on track 2</span></label>
         </fieldset>
+        <label class="check">
+          <input type="checkbox" id="export-stills"> <span>Also save a still of every select and a contact sheet</span>
+        </label>
         <button class="btn btn-primary btn-block" id="btn-export">Export timeline</button>
         <p class="hint" id="export-hint">Writes four files side by side: .xml for Premiere Pro and DaVinci Resolve, .fcpxml for Final Cut Pro, an .edl, and a .csv spreadsheet.</p>
+        <div id="stills-status" aria-live="polite"></div>
+        <button class="btn btn-secondary btn-block" id="btn-stills">Save stills and contact sheet only</button>
+      </div>
+
+      <div class="side-section" id="reel-section">
+        <h2 class="eyebrow">Make a reel</h2>
+        <div id="reel-body"></div>
       </div>
 
       <div class="side-section">

@@ -53,7 +53,18 @@ const ICON = {
   left: '<path d="M8.8 2.8L4.6 7l4.2 4.2"/>',
   right: '<path d="M5.2 2.8L9.4 7l-4.2 4.2"/>',
   film: '<rect x="2" y="2.5" width="10" height="9" rx="1.5"/><path d="M4.6 2.5v9M9.4 2.5v9M2 5.5h2.6M2 8.5h2.6M9.4 5.5H12M9.4 8.5H12"/>',
+  star: '<path d="M7 1.9l1.55 3.2 3.5.48-2.55 2.44.63 3.48L7 9.85 3.87 11.5l.63-3.48L1.95 5.58l3.5-.48z"/>',
+  cross: '<path d="M3.5 3.5l7 7M10.5 3.5l-7 7"/>',
+  hand: '<path d="M4.5 7.5V3.8a.9.9 0 0 1 1.8 0V7M6.3 6.5V2.9a.9.9 0 0 1 1.8 0v3.6M8.1 6.6V3.6a.9.9 0 0 1 1.8 0v4.6c0 2-1.4 3.6-3.4 3.6-1.3 0-2.2-.6-2.9-1.6L2.3 8.1a.9.9 0 0 1 1.4-1.1l.8.9"/>',
+  sun: '<circle cx="7" cy="7" r="2.6"/><path d="M7 1.5v1.3M7 11.2v1.3M1.5 7h1.3M11.2 7h1.3M3.1 3.1l.9.9M10 10l.9.9M3.1 10.9l.9-.9M10 4l.9-.9"/>',
+  wave: '<path d="M1.8 7h1.4M4.6 4.5v5M7 2.8v8.4M9.4 4.5v5M10.8 7h1.4"/>',
+  level: '<path d="M1.8 9.2l10.4-3.4M4 11.5h6"/>',
 };
+const LIGHT_WORDS = { night: "Night", blue_hour: "Blue hour", golden_hour: "Golden hour", daylight: "Daylight", harsh_midday: "Harsh midday" };
+const SOUND_WORDS = { wind: "Wind noise", clipped: "Sound clipped", dropout: "Sound drops out" };
+const LIGHT_FILTER_WORDS = { any: "any light", golden_hour: "golden hour", blue_hour: "blue hour", daylight: "daylight", night: "night" };
+const starsHtml = (n) => (n ? `<span class="stars" role="img" aria-label="${n} ${n === 1 ? "star" : "stars"}">${Array.from({ length: n }, () => icon("star", "icon icon-star")).join("")}</span>` : "");
+const starText = (n) => (n ? `${n} ${n === 1 ? "star" : "stars"}` : "");
 const icon = (name, cls = "icon") => `<svg class="${cls}" viewBox="0 0 14 14" aria-hidden="true">${ICON[name]}</svg>`;
 const pill = (tone, shape, word) => `<span class="pill pill-${tone}">${icon(shape)}${esc(word)}</span>`;
 
@@ -227,6 +238,9 @@ function noSelectHtml(r) {
     const bits = [];
     if (r.camera) bits.push(`${plural(r.camera, "good stretch", "good stretches")} without ${FILTER_WORDS[state?.selection?.camera] || "the chosen movement"}`);
     if (r.repeats) bits.push(`${plural(r.repeats, "repeated take")} of a better select in another clip`);
+    if (r.light) bits.push(`${plural(r.light, "good stretch", "good stretches")} not in ${LIGHT_FILTER_WORDS[state?.selection?.light] || "the chosen light"}`);
+    if (r.sound) bits.push(`${plural(r.sound, "good stretch", "good stretches")} with sound problems`);
+    if (r.dropped) bits.push(`${plural(r.dropped, "stretch", "stretches")} dropped by hand`);
     text = bits.join(", ");
   } else {
     p = pill("red", "triangle", "Below threshold");
@@ -257,15 +271,23 @@ function selectsCell(c) {
 
 function clipTags(c) {
   const bits = [];
+  if (c.light) bits.push(`<span class="tag" title="From the sun's height when and where the clip was recorded">${icon("sun")}${esc(LIGHT_WORDS[c.light] || c.light)}</span>`);
   if (c.profile_is_log) bits.push(`<span class="tag" title="Exposure is judged through this profile's curve">${esc(c.profile_label)}</span>`);
+  if (c.talking) bits.push(`<span class="tag" title="Someone talks in this clip, so selects start and end in pauses">${icon("wave")}Talking</span>`);
+  if (c.marks) bits.push(`<span class="tag">${icon("hand")}${plural(c.marks, "call", "calls")} by hand</span>`);
   if (c.choppy_shutter) bits.push(pill("amber", "triangle", "Fast shutter"));
+  if (c.crooked) bits.push(pill("amber", "triangle", "Crooked horizon"));
+  if (c.flicker) bits.push(pill("amber", "triangle", "Flicker"));
+  if (c.jello) bits.push(pill("amber", "triangle", "Jello"));
+  for (const k of c.sound || []) bits.push(pill("amber", "triangle", SOUND_WORDS[k] || k));
+  if (c.wb_note) bits.push(`<span class="tag" title="${esc(c.wb_note)}">White balance differs</span>`);
   return bits.length ? `<div class="clip-tags">${bits.join("")}</div>` : "";
 }
 
 function listHtml() {
   const rows = state.clips.map((c) => `
     <tr data-clip="${c.id}">
-      <td class="name-cell"><div class="clip-name">${esc(c.name)}</div><div class="clip-sub">${esc(c.folder)}</div>${clipTags(c)}</td>
+      <td class="name-cell"><div class="clip-name">${esc(c.name)}</div><div class="clip-sub">${c.group ? `${esc(c.group)} · ` : ""}${esc(c.folder)}</div>${clipTags(c)}</td>
       <td class="num tabular">${c.duration ? fmtClock(c.duration) : "–"}</td>
       <td class="tabular nowrap">${c.rate ? esc(c.rate) : "–"}${c.variable_frame_rate ? '<div class="clip-sub">Variable rate</div>' : ""}</td>
       <td class="tabular col-size">${c.width ? `${c.width}×${c.height}` : "–"}</td>
@@ -278,9 +300,50 @@ function listHtml() {
     <tbody>${rows}</tbody></table></div>`;
 }
 
+/* ---------- main panel: shoot report ---------- */
+
+let report = null, reportError = null;
+
+async function openReport() {
+  view = { mode: "report", clipId: null };
+  report = null; reportError = null;
+  renderMain();
+  try { report = await invoke("shoot_report"); } catch (e) { reportError = String(e); }
+  if (view.mode === "report") renderMain();
+}
+
+const TONE_PILL = { good: ["green", "tick", "Good"], warn: ["amber", "triangle", "Worth fixing"], info: ["grey", "dash", "Note"] };
+
+function renderReport() {
+  const panel = $("main-panel");
+  const back = `<button class="link" data-act="back">${icon("back")} Back to all clips</button>`;
+  if (reportError) { panel.innerHTML = `<div class="detail-head">${back}</div>` + errorHtml("The report could not be made", reportError, "Nothing was changed. Go back and try again."); return; }
+  if (!report) { panel.innerHTML = `<div class="detail-head">${back}</div>` + loadingHtml("Going through the shoot"); return; }
+  if (!report.clips_analyzed) {
+    panel.innerHTML = `<div class="detail-head">${back}</div><div class="empty-small"><strong>Nothing to report yet</strong>The report is made from analyzed clips. Add footage and let it analyze, then open the report again.</div>`;
+    return;
+  }
+  const cards = report.findings.map((f) => {
+    const [tone, shape, word] = TONE_PILL[f.tone] || TONE_PILL.info;
+    const rows = f.rows?.length ? `<table class="report-table"><thead><tr><th>Group</th><th class="num">Clips</th><th>Result</th></tr></thead><tbody>${f.rows.map(([a, n, v]) => `<tr><td>${esc(a)}</td><td class="num tabular">${n}</td><td>${esc(v)}</td></tr>`).join("")}</tbody></table>` : "";
+    return `<article class="finding">${pill(tone, shape, word)}<h3>${esc(f.title)}</h3><p>${esc(f.body)}</p>${rows}</article>`;
+  }).join("");
+  panel.innerHTML = `<div class="detail"><div class="detail-head">${back}
+      <div class="detail-title"><h2>Shoot report</h2></div>
+      <div class="meta"><span><span class="num">${report.clips_analyzed}</span> of ${plural(report.clips, "clip")} analyzed</span><span><span class="num">${fmtDur(report.footage_seconds)}</span> of footage</span><span><span class="num">${report.selects}</span> selects, <span class="num">${fmtDur(report.selects_seconds)}</span></span></div>
+      <div class="row-actions"><button class="btn btn-secondary btn-small" data-act="save-report">${icon("down")}Save as a page</button></div>
+    </div><div class="findings">${cards}</div></div>`;
+}
+
+async function saveReport() {
+  try { const path = await invoke("save_report"); if (path) toast(`${icon("tick")} Saved to ${esc(path)}`); }
+  catch (e) { showError("The report was not saved", String(e)); }
+}
+
 function renderMain() {
   const panel = $("main-panel");
   if (view.mode === "detail") { renderDetail(); return; }
+  if (view.mode === "report") { renderReport(); return; }
   if (toolError) { panel.innerHTML = headerHtml() + errorHtml("The video tools could not start", toolError, `Nothing was analyzed. Reinstall ${esc(appName())} from the download page, then open it again.`); return; }
   if (loadError) { panel.innerHTML = errorHtml(`${esc(AppName())} could not load its state`, loadError, "Nothing was lost. Close the app and open it again."); return; }
   if (state === null) { panel.innerHTML = loadingHtml(`Opening ${esc(appName())}`); return; }
@@ -300,6 +363,7 @@ function renderMain() {
 function whyText(seg, sel, cap) {
   switch (seg.status) {
     case "kept":
+      if (seg.manual) return `Kept by hand${seg.stars ? `, ${starText(seg.stars)}` : ""}. It stays whatever the sliders and filters say.`;
       if (seg.camera_move && seg.end - seg.start > sel.max_length + 0.01) return "Kept whole: one camera move, longer than the longest select.";
       return seg.camera_move ? "Every score is at or above its threshold. Camera move." : "Every score is at or above its threshold.";
     case "below_threshold": {
@@ -312,6 +376,9 @@ function whyText(seg, sel, cap) {
     case "over_limit": return `Dropped: good, but ${plural(cap, "better select is", "better selects are")} already kept in this clip.`;
     case "set_aside":
       if (seg.aside === "repeat" && seg.similar_to) return `Set aside: looks like the select in ${clipName(seg.similar_to.clip)} at ${fmtClock(seg.similar_to.start)}, which scored higher.`;
+      if (seg.aside === "dropped") return "Dropped by hand. The clip's next best stretch can take its place.";
+      if (seg.aside === "light") return `Set aside: the light filter asks for ${LIGHT_FILTER_WORDS[sel.light] || "another light"}, and this clip ${detail?.scene?.light ? `was recorded in ${(LIGHT_WORDS[detail.scene.light] || "").toLowerCase()}` : "has no known time and place to judge the light by"}.`;
+      if (seg.aside === "sound") return "Set aside: its sound has a problem (see the notes), and the filter sets those aside.";
       return `Set aside: the camera filter asks for ${FILTER_WORDS[sel.camera] || "another movement"}, and this stretch is ${(CAMERA_WORDS[seg.camera] || "moving").toLowerCase()}.`;
   }
   return "";
@@ -321,6 +388,19 @@ function whyText(seg, sel, cap) {
 function repeatNote(seg) {
   if (!seg.similar_to || seg.status === "set_aside") return "";
   return ` Looks like the select in ${clipName(seg.similar_to.clip)} at ${fmtClock(seg.similar_to.start)}.`;
+}
+
+/** Problems and speech notes for a stretch that passed the thresholds, as sentences. */
+function checkNotes(seg) {
+  if (seg.status === "below_threshold") return "";
+  const bits = [];
+  if (seg.roll != null && Math.abs(seg.roll) >= 1) bits.push(`Horizon tilts down to the ${seg.roll > 0 ? "right" : "left"} by ${Math.abs(seg.roll).toFixed(1)}°; rotate ${seg.roll > 0 ? "counter-clockwise" : "clockwise"} to level it.`);
+  if (seg.flicker != null && seg.flicker >= 0.012) bits.push("Light flicker: bands roll through the picture.");
+  if (seg.wobble != null && seg.wobble >= 0.35) bits.push("Jello: the picture wobbles within the frame.");
+  for (const k of seg.sound || []) bits.push(`${SOUND_WORDS[k] || k}.`);
+  if (seg.status === "kept" && seg.snapped) bits.push(seg.snapped === 2 ? "Both ends moved into pauses in the talking." : "One end moved into a pause in the talking.");
+  if (seg.status === "kept" && seg.speech_cuts) bits.push(seg.speech_cuts === 2 ? "Starts and ends mid-sentence: no pause was close enough." : "Cuts mid-sentence: no pause was close enough.");
+  return bits.length ? " " + bits.join(" ") : "";
 }
 
 function graphSvg(key, label, w, d) {
@@ -373,7 +453,69 @@ function laneSvg(w, d) {
     const x0 = x(a), bw = Math.max(4, x(b) - x0);
     s += `<rect x="${x0.toFixed(1)}" y="1" width="${bw.toFixed(1)}" height="${H - 2}" rx="5" fill="none" stroke="#9A5B00" stroke-width="1.6" stroke-dasharray="4 3"/>`;
   }
+  for (const m of d.marks || []) {
+    const x0 = x(m.start), bw = Math.max(4, x(m.end) - x0);
+    s += `<rect x="${x0.toFixed(1)}" y="0.8" width="${bw.toFixed(1)}" height="${H - 1.6}" rx="5" fill="none" stroke="${m.call === "keep" ? "#2C4A6E" : "#B3261E"}" stroke-width="2"/>`;
+  }
   return `<svg viewBox="0 0 ${w} ${H}" width="${w}" height="${H}" aria-hidden="true">${s}</svg>`;
+}
+
+/** A thin lane showing where someone talks. */
+function talkSvg(w, d) {
+  const H = 10, dur = d.duration || 1;
+  let s = `<rect x="0" y="4" width="${w}" height="2" rx="1" fill="#EFF2F4"/>`;
+  for (const [a, b] of d.talking || []) {
+    const x0 = (a / dur) * w, bw = Math.max(1.5, ((b - a) / dur) * w);
+    s += `<rect x="${x0.toFixed(1)}" y="1" width="${bw.toFixed(1)}" height="8" rx="2" fill="#7A8798"/>`;
+  }
+  return `<svg viewBox="0 0 ${w} ${H}" width="${w}" height="${H}" aria-hidden="true">${s}</svg>`;
+}
+
+const fmtWhen = (utc, offset) => {
+  if (utc == null) return "";
+  const d = new Date((utc + (offset || 0) * 60) * 1000);
+  const p2 = (n) => String(n).padStart(2, "0");
+  return `${d.getUTCFullYear()}-${p2(d.getUTCMonth() + 1)}-${p2(d.getUTCDate())} ${p2(d.getUTCHours())}:${p2(d.getUTCMinutes())}`;
+};
+
+function callCell(s) {
+  if (s.manual) return `<span class="call call-keep">${icon("hand")}Kept${s.stars ? ` ${starsHtml(s.stars)}` : ""}</span>`;
+  if (s.aside === "dropped") return `<span class="call call-drop">${icon("cross")}Dropped</span>`;
+  return '<span class="muted">–</span>';
+}
+
+function sceneRowHtml(d) {
+  const sc = d.scene;
+  if (!sc) return "";
+  const bits = [];
+  if (sc.group) bits.push(`<strong>${esc(sc.group)}</strong>`);
+  if (sc.utc != null) bits.push(`Recorded <span class="num">${fmtWhen(sc.utc, sc.offset_minutes)}</span> local time${sc.zone_estimated ? " (time zone estimated)" : ""}`);
+  else if (sc.wall != null) bits.push(`Recorded <span class="num">${fmtWhen(sc.wall, 0)}</span> by the camera's clock, time zone unknown`);
+  if (sc.light) bits.push(`${icon("sun")} ${esc(LIGHT_WORDS[sc.light])}, sun <span class="num">${sc.sun > 0 ? "" : "−"}${Math.abs(sc.sun).toFixed(0)}°</span> ${sc.sun >= 0 ? "above" : "below"} the horizon`);
+  const src = [];
+  if (sc.time_source) src.push(`time from ${esc(sc.time_source)}`);
+  if (sc.place_source) src.push(`place from ${esc(sc.place_source)}`);
+  let html = bits.length ? `<div class="meta">${bits.map((b) => `<span>${b}</span>`).join("")}${src.length ? `<span class="muted">${src.join(", ")}</span>` : ""}</div>` : "";
+  if (!sc.light && sc.utc == null && sc.wall == null) html += `<div class="meta muted"><span>No recording time found, so the light cannot be worked out.</span></div>`;
+  else if (!sc.light) html += `<div class="meta muted"><span>No place found, so the light cannot be worked out. Add where you shot under Places and time.</span></div>`;
+  if (sc.wb_note) html += `<div class="note">${pill("grey", "dash", "White balance")}<span>${esc(sc.wb_note)}</span></div>`;
+  return html;
+}
+
+function soundRowHtml(d) {
+  if (d.audio_error) return `<div class="note">${pill("amber", "triangle", "Sound not checked")}<span>${esc(d.audio_error)}</span></div>`;
+  const sm = d.sound;
+  if (!sm) return "";
+  if (sm.silent) return `<div class="meta muted"><span>${icon("wave")} The sound track is silent.</span></div>`;
+  const bits = [];
+  bits.push(sm.has_speech ? `Someone talks for <span class="num">${Math.round(sm.talk_share * 100)}%</span> of the clip` : "No talking found");
+  let html = `<div class="meta"><span>${icon("wave")} ${bits.join("")}</span><span class="muted">Sound level around <span class="num">${Math.round(sm.median_db)}</span> dB, background <span class="num">${Math.round(sm.noise_floor_db)}</span> dB</span></div>`;
+  const probs = [];
+  if (sm.wind_share >= 0.2) probs.push(`${pill("amber", "triangle", "Wind noise")}<span>Wind for <span class="num">${Math.round(sm.wind_share * 100)}%</span> of the clip.</span>`);
+  if (sm.clipped_events >= 3) probs.push(`${pill("amber", "triangle", "Sound clipped")}<span>The sound distorts <span class="num">${sm.clipped_events}</span> times: it was recorded too loud.</span>`);
+  if (sm.dropouts?.length) probs.push(`${pill("amber", "triangle", "Sound drops out")}<span>The sound cuts out ${plural(sm.dropouts.length, "time")}, first at <span class="num">${fmtClock(sm.dropouts[0][0])}</span>.</span>`);
+  for (const p of probs) html += `<div class="note">${p}</div>`;
+  return html;
 }
 
 function axisSvg(w, dur) {
@@ -436,19 +578,21 @@ function renderDetail() {
       const usedIn = (d.used || []).filter(([a, b, n]) => Math.min(b, s.end) - Math.max(a, s.start) > 0.25).map(([, , n]) => n);
       const usedText = usedIn.length ? ` Used in ${[...new Set(usedIn)].join(", ")}.` : "";
       const pinned = viewer.pin >= s.start && viewer.pin < s.end ? ' class="pinned"' : "";
-      return `<tr data-seg="${s.start}:${s.end}"${pinned} title="Show this stretch in the frame viewer"><td class="tabular nowrap">${fmtClock(s.start)} – ${fmtClock(s.end)}</td><td class="num tabular">${fmtDur(s.end - s.start)}</td><td>${pill(t, sh, wd)}</td><td class="why">${esc(whyText(s, d.selection, keptCount) + repeatNote(s) + usedText)}</td>
-        <td class="nowrap">${esc(CAMERA_WORDS[s.camera] || "Still")}</td><td class="num tabular">${pct(s.focus)}</td><td class="num tabular">${pct(s.exposure)}</td>${isLog ? `<td class="num tabular">${fmtStops(s.key_stops)}</td>` : ""}<td class="num tabular">${pct(s.stability)}</td><td class="num tabular">${pct(s.score)}</td></tr>`;
+      return `<tr data-seg="${s.start}:${s.end}"${pinned} title="Show this stretch in the frame viewer"><td class="tabular nowrap">${fmtClock(s.start)} – ${fmtClock(s.end)}</td><td class="num tabular">${fmtDur(s.end - s.start)}</td><td>${pill(t, sh, wd)}</td><td class="why">${esc(whyText(s, d.selection, keptCount) + repeatNote(s) + checkNotes(s) + usedText)}</td>
+        <td class="nowrap">${callCell(s)}</td><td class="nowrap">${esc(CAMERA_WORDS[s.camera] || "Still")}</td><td class="num tabular">${pct(s.focus)}</td><td class="num tabular">${pct(s.exposure)}</td>${isLog ? `<td class="num tabular">${fmtStops(s.key_stops)}</td>` : ""}<td class="num tabular">${pct(s.stability)}</td><td class="num tabular">${pct(s.score)}</td></tr>`;
     }).join("");
+    const markLegend = (d.marks || []).length ? `<span class="legend-used"><svg class="icon" viewBox="0 0 14 14" aria-hidden="true"><rect x="1.5" y="3" width="11" height="8" rx="2" stroke="#2C4A6E"/></svg>Kept by hand</span><span class="legend-used"><svg class="icon" viewBox="0 0 14 14" aria-hidden="true"><rect x="1.5" y="3" width="11" height="8" rx="2" stroke="#B3261E"/></svg>Dropped by hand</span>` : "";
     const usedLegend = (d.used || []).length ? `<span class="legend-used"><svg class="icon" viewBox="0 0 14 14" aria-hidden="true"><rect x="1.5" y="3" width="11" height="8" rx="2" stroke="#9A5B00" stroke-dasharray="2.5 1.8"/></svg>Used in your edits</span>` : "";
-    body = `${viewerHtml(d)}<div class="legend"><span class="label">Stretches</span>${Object.values(SEG_STATUS).map(([t, s, wd]) => pill(t, s, wd)).join("")}${d.measured_until < d.duration - 0.01 ? pill("grey", "clock", "Not measured yet") : ""}${usedLegend}</div>
+    body = `${viewerHtml(d)}<div class="legend"><span class="label">Stretches</span>${Object.values(SEG_STATUS).map(([t, s, wd]) => pill(t, s, wd)).join("")}${d.measured_until < d.duration - 0.01 ? pill("grey", "clock", "Not measured yet") : ""}${usedLegend}${markLegend}</div>
       <div class="graphs">
         <div class="graph">${laneSvg(w, d)}</div>
+        ${(d.talking || []).length ? `<div class="graph talk-lane"><div class="graph-head"><span class="name">Talking</span><span class="stats">Selects start and end in the gaps</span></div>${talkSvg(w, d)}</div>` : ""}
         ${graph("focus", "Focus")}${graph("exposure", "Exposure")}${graph("stability", "Stability")}
         <div class="graph-axis">${axisSvg(w, d.duration || 1)}</div>
       </div>
       <div class="readout" id="readout">Move the pointer over a graph to read the scores and see the picture at that moment; click to hold it. Navy is the smoothed score used for selection, grey the raw per-frame score, the dashed line the threshold.</div>
       <div class="seg-table"><h3 class="eyebrow" style="padding-left:18px">Every stretch of this clip</h3>
-        <table><thead><tr><th>Time</th><th class="num">Length</th><th>Result</th><th>Why</th><th>Camera</th><th class="num">Focus</th><th class="num">Exposure</th>${isLog ? '<th class="num" title="Middle tones in stops from middle grey">Stops</th>' : ""}<th class="num">Stability</th><th class="num">Overall</th></tr></thead><tbody>${segRows}</tbody></table></div>`;
+        <table><thead><tr><th>Time</th><th class="num">Length</th><th>Result</th><th>Why</th><th>Your call</th><th>Camera</th><th class="num">Focus</th><th class="num">Exposure</th>${isLog ? '<th class="num" title="Middle tones in stops from middle grey">Stops</th>' : ""}<th class="num">Stability</th><th class="num">Overall</th></tr></thead><tbody>${segRows}</tbody></table></div>`;
   }
 
   panel.innerHTML = `<div class="detail">
@@ -456,7 +600,7 @@ function renderDetail() {
       <div class="detail-title"><h2 class="selectable">${esc(d.name)}</h2>${statusPill}</div>
       <div class="meta">${meta.map((m) => `<span>${m}</span>`).join("")}</div>
       <div class="meta selectable">${esc(d.path)}</div>
-      ${cameraHtml}${profileHtml}
+      ${cameraHtml}${sceneRowHtml(d)}${soundRowHtml(d)}${profileHtml}
     </div>${body}</div>`;
   const cp = $("clip-profile");
   if (cp) cp.value = cp.dataset.value;
@@ -636,6 +780,8 @@ function pinAt(t) {
     const [a, b] = tr.dataset.seg.split(":").map(Number);
     tr.classList.toggle("pinned", viewer.pin >= a && viewer.pin < b);
   }
+  const calls = $("calls");
+  if (calls) { const h = callsHtml(); calls.innerHTML = h; calls.dataset.html = h; }
   showFrameAt(viewer.pin);
 }
 
@@ -655,7 +801,55 @@ function viewerHtml(d) {
     <div class="viewer-bar"><div class="chips" role="radiogroup" aria-label="How the frame is shown">${modes}</div>${steps}</div>
     <div class="viewer-well"><canvas id="viewer-canvas" aria-label="The clip at the held moment"></canvas><div class="viewer-state" id="viewer-state"></div></div>
     <div class="viewer-foot"><div class="viewer-time" id="viewer-time"></div><div class="viewer-legend" id="viewer-legend"></div></div>
+    <div class="calls" id="calls"></div>
   </div>`;
+}
+
+/** The stretch a call made now would cover: the hand call at the held moment, the stretch under it, or for a long dropped stretch, a select-length piece around it. */
+function callTarget() {
+  if (!detail) return null;
+  const t = viewer.pin;
+  const mark = (detail.marks || []).find((m) => t >= m.start && t < m.end);
+  if (mark) return { start: mark.start, end: mark.end, mark };
+  const seg = detail.segments.find((s) => t >= s.start && t < s.end);
+  if (!seg) return null;
+  if (seg.status === "below_threshold" || seg.end - seg.start > detail.selection.max_length * 2) {
+    const len = Math.min(seg.end - seg.start, detail.selection.max_length);
+    let a = Math.max(seg.start, t - len / 2);
+    const b = Math.min(seg.end, a + len);
+    a = Math.max(seg.start, b - len);
+    return { start: a, end: b, seg };
+  }
+  return { start: seg.start, end: seg.end, seg };
+}
+
+function callsHtml() {
+  const tg = callTarget();
+  if (!tg) return "";
+  const m = tg.mark;
+  const isKeep = m?.call === "keep" || (!m && tg.seg?.manual);
+  const isDrop = m?.call === "drop";
+  const stars = m?.stars || 0;
+  const starBtns = [1, 2, 3, 4, 5].map((n) => `<button class="star-btn" data-act="star" data-stars="${n}" aria-pressed="${stars >= n}" title="${n} ${n === 1 ? "star" : "stars"} (key ${n})">${icon("star", "icon icon-star")}</button>`).join("");
+  const what = m ? (isKeep ? `Kept by hand${stars ? `, ${starText(stars)}` : ""}` : "Dropped by hand") : "Your call on";
+  return `<div class="calls-row">
+    <span class="calls-what">${esc(what)} <span class="num">${fmtClock(tg.start)} – ${fmtClock(tg.end)}</span></span>
+    <button class="btn btn-secondary btn-small" data-act="keep" aria-pressed="${isKeep}" title="Keep this stretch whatever the settings say (K)">${icon("tick")}Keep this</button>
+    <button class="btn btn-secondary btn-small" data-act="drop" aria-pressed="${isDrop}" title="Leave this stretch out (X)">${icon("cross")}Drop this</button>
+    <span class="star-row" role="group" aria-label="Stars">${starBtns}</span>
+    ${m ? `<button class="link" data-act="clear-call" title="Go back to what the settings choose (0)">Go back to the settings' choice</button>` : ""}
+  </div>`;
+}
+
+async function makeCall(call, stars) {
+  const tg = callTarget();
+  if (!tg || !detail) return;
+  try {
+    state = await invoke("mark_stretch", { id: view.clipId, start: tg.start, end: tg.end, call, stars: stars || 0 });
+    renderAllButSide();
+    syncSide();
+    await refreshDetail();
+  } catch (e) { showError("Your call was not saved", String(e)); }
 }
 
 function lumaOf(f) {
@@ -792,6 +986,8 @@ function paintViewer() {
   const t = viewer.frameT ?? viewer.want ?? viewer.pin;
   const seg = detail.segments.find((s) => t >= s.start && t < s.end);
   const held = Math.abs(t - viewer.pin) < 0.05;
+  const calls = $("calls");
+  if (calls) { const h = callsHtml(); if (calls.dataset.html !== h) { calls.innerHTML = h; calls.dataset.html = h; } }
   $("viewer-time").innerHTML = `${held ? "Held at" : "At"} <span class="num">${fmtClock(t)}</span>${seg ? ` · ${esc(SEG_STATUS[seg.status][2])} · ${esc(CAMERA_WORDS[seg.camera] || "Still")}` : ""}`;
 }
 
@@ -815,7 +1011,7 @@ const DEFAULT_SELECTION = { focus_min: 0.5, exposure_min: 0.5, stability_min: 0.
 /* Presets set the sliders only; the camera filter and repeated takes stay as they are. */
 const PRESETS = [
   { id: "balanced", label: "Balanced", hint: "The starting settings. Suits most footage, up to three selects from each clip.", v: DEFAULT_SELECTION },
-  { id: "long", label: "Long takes", hint: "For interviews, talks and locked-off shots: selects of 5 to 30 seconds, with focus and steadiness deciding which win. Sound is not checked, so a select can start mid-sentence.",
+  { id: "long", label: "Long takes", hint: "For interviews, talks and locked-off shots: selects of 5 to 30 seconds, with focus and steadiness deciding which win. Selects start and end in a pause when someone talks.",
     v: { focus_min: 0.6, exposure_min: 0.5, stability_min: 0.65, smoothing: 1.5, min_length: 5, max_length: 30, max_per_clip: 2, keep_moves_whole: false, focus_weight: 1, exposure_weight: 0.6, stability_weight: 0.8 } },
   { id: "short", label: "Short clips", hint: "For reels and social edits: clean selects of 1.5 to 5 seconds, up to five from each clip.",
     v: { focus_min: 0.55, exposure_min: 0.55, stability_min: 0.55, smoothing: 0.5, min_length: 1.5, max_length: 5, max_per_clip: 5, keep_moves_whole: false, focus_weight: 1, exposure_weight: 1, stability_weight: 1 } },
@@ -864,6 +1060,10 @@ function syncSide() {
   $("keep-moves").checked = !!localSel.keep_moves_whole;
   renderPresets();
   renderFilters();
+  renderExtraFilters();
+  renderPlaces();
+  renderReel();
+  renderStillsStatus();
   const sr = $("sample-rate");
   if (document.activeElement !== sr) sr.value = String(state.sample_rate);
 
@@ -883,6 +1083,9 @@ function syncSide() {
   $("drop-frame-row").hidden = !ex.timeline_rate.drop_frame_capable;
   $("drop-frame").checked = ex.drop_frame;
   for (const r of document.querySelectorAll('input[name="layout"]')) r.checked = r.value === ex.layout;
+  const hs = $("handles");
+  if (document.activeElement !== hs) hs.value = String(ex.handles || 0);
+  $("export-stills").checked = !!ex.stills;
   const nameInput = $("timeline-name");
   if (document.activeElement !== nameInput) nameInput.value = ex.timeline_name;
 
@@ -919,6 +1122,147 @@ function renderFilters() {
     : a.repeats_found
       ? `${plural(a.repeats_found, "select looks", "selects look")} like a better select in another clip, such as a second take from the same spot. Tick this to keep only the best take.`
       : "Finds selects that look like a better select in another clip, such as a second take from the same spot, and keeps only the best.";
+}
+
+function renderExtraFilters() {
+  const a = state.aside || {};
+  const light = localSel.light || "any";
+  for (const b of document.querySelectorAll("[data-light]")) b.setAttribute("aria-checked", String(b.dataset.light === light));
+  const known = state.light_known || 0, total = (state.clips || []).filter((c) => c.status !== "unreadable").length;
+  const unknown = Math.max(0, total - known);
+  $("light-hint").textContent = light === "any"
+    ? known
+      ? `Light is known for ${known} of ${plural(total, "clip")}, from the sun's height when and where each was recorded.${unknown ? ` ${plural(unknown, "clip")} ${unknown === 1 ? "has" : "have"} no time or place; add where you shot under Places and time.` : ""}`
+      : "Keep only footage shot in a certain light. It needs each clip's recording time and place; phones and DJI drones record both, and you can add the place for other cameras under Places and time."
+    : `${a.light ? `${plural(a.light, "good stretch is", "good stretches are")} set aside.` : "Nothing is set aside."} Clips with no known light are set aside too${unknown ? ` (${unknown} now)` : ""}.`;
+  $("set-aside-sound").checked = !!localSel.set_aside_sound_problems;
+  $("sound-hint").textContent = localSel.set_aside_sound_problems
+    ? (a.sound ? `${plural(a.sound, "good stretch is", "good stretches are")} set aside for wind noise, clipped sound or a dropout.` : "No select has a sound problem, so nothing is set aside.")
+    : "Wind noise, clipped sound and dropouts are always listed. Tick this when you will use the sound, to keep only selects where it is clean.";
+  $("snap-pauses").checked = localSel.snap_to_pauses !== false;
+  const talk = state.talking_clips || 0;
+  $("snap-hint").textContent = talk
+    ? `Someone talks in ${plural(talk, "clip")}. With this on, a select there starts just before a sentence and ends just after one, moving up to 2 seconds to find a pause.`
+    : "When someone talks, selects start just before a sentence and end just after one. No talking has been found yet.";
+}
+
+function renderPlaces() {
+  const pl = state.places || {};
+  const inp = $("place-input");
+  if (document.activeElement !== inp) inp.value = pl.location ? `${pl.location[0]}, ${pl.location[1]}` : "";
+  const zs = $("clock-zone");
+  if (!zs.dataset.filled) {
+    const opts = ['<option value="auto">Work it out</option>'];
+    for (let m = -12 * 60; m <= 14 * 60; m += 30) {
+      if (m % 60 !== 0 && ![-570, -210, 210, 270, 330, 345, 390, 525, 570, 630].includes(m) && ![-150, 150, 330, 570, 630].includes(m)) continue;
+      const h = Math.floor(Math.abs(m) / 60), mm = Math.abs(m) % 60;
+      opts.push(`<option value="${m}">UTC${m < 0 ? "−" : "+"}${h}${mm ? ":" + String(mm).padStart(2, "0") : ""}</option>`);
+    }
+    zs.innerHTML = opts.join(""); zs.dataset.filled = "1";
+  }
+  if (document.activeElement !== zs) zs.value = pl.clock_offset_minutes == null ? "auto" : String(pl.clock_offset_minutes);
+  $("places-hint").textContent = "Phones and DJI drones record where and when. Many cameras record only their own clock time, without a time zone: Work it out uses the zone other clips state, or the place's longitude, which can be an hour out. Setting it is more exact.";
+}
+
+async function pushPlaces() {
+  const raw = $("place-input").value.trim();
+  let location = null;
+  if (raw) {
+    const m = raw.match(/^\s*(-?\d+(?:\.\d+)?)\s*[,;\s]\s*(-?\d+(?:\.\d+)?)\s*$/);
+    if (!m) { showError("That place was not understood", "Type a latitude and longitude separated by a comma, for example 38.7223, -9.1393. You can copy them from a map app. Nothing was changed."); return; }
+    location = [Number(m[1]), Number(m[2])];
+  }
+  const z = $("clock-zone").value;
+  try { state = await invoke("set_places", { location, clockOffsetMinutes: z === "auto" ? null : Number(z) }); renderAll(); if (view.mode === "detail") refreshDetail(); }
+  catch (e) { showError("The place was not changed", String(e)); renderPlaces(); }
+}
+
+const PACES = [["auto", "About 2 seconds"], ["every_beat", "Every beat"], ["every_two_beats", "Every 2 beats"], ["every_bar", "Every bar"], ["every_two_bars", "Every 2 bars"]];
+const SHAPES = [["landscape", "16:9"], ["vertical", "9:16"], ["square", "1:1"]];
+const ORDERS = [["as_shot", "As shot"], ["best_first", "Best first"]];
+const LENGTHS = [["", "Whole song"], ["15", "15 s"], ["30", "30 s"], ["60", "60 s"], ["90", "90 s"]];
+
+function renderReel() {
+  const box = $("reel-body");
+  if (!box || !state) return;
+  const r = state.reel;
+  let html = "";
+  if (r.reading) {
+    html += `<p class="update-line"><span class="spinner" aria-hidden="true"></span>Finding the beats in the song</p>`;
+  } else if (!r.music_name) {
+    html += `<p class="hint">Pick a song and ${esc(appName())} cuts your best selects to its beat, with the song under them, as a timeline for your editor. Choose how often to cut and how long the reel runs.</p>`;
+    html += `<button class="btn btn-secondary btn-block" data-act="choose-music">${icon("plus")}Choose a song</button>`;
+  } else {
+    const steady = r.beat_confidence != null && r.beat_confidence < 0.35 ? " The beat is not very steady, so some cuts may land a little off." : "";
+    html += `<div class="fv-row"><div class="fv-text"><div class="fv-name">${esc(r.music_name)}</div><div class="fv-sub">${r.tempo ? `<span class="num">${r.tempo}</span> beats per minute · ` : ""}<span class="num">${fmtDur(r.music_seconds || 0)}</span>${esc(steady)}</div></div><button class="link" data-act="choose-music">Change</button></div>`;
+    const chips = (list, cur, attr) => list.map(([id, word]) => `<button class="chip" role="radio" aria-checked="${String(cur) === id}" data-${attr}="${id}">${esc(word)}</button>`).join("");
+    html += `<div class="field-label">Cut</div><div class="chips" role="radiogroup" aria-label="How often to cut">${chips(PACES, r.pace, "pace")}</div>`;
+    html += `<div class="field-label">Length</div><div class="chips" role="radiogroup" aria-label="Reel length">${chips(LENGTHS, r.length == null ? "" : String(r.length), "reel-length")}</div>`;
+    html += `<div class="field-label">Order</div><div class="chips" role="radiogroup" aria-label="Order">${chips(ORDERS, r.order, "order")}</div>`;
+    html += `<div class="field-label">Shape</div><div class="chips" role="radiogroup" aria-label="Shape">${chips(SHAPES, r.shape, "shape")}</div>`;
+    html += `<p class="hint">As shot keeps the order the moments happened. 9:16 and 1:1 are cut from the centre of the picture; check the framing in your editor.</p>`;
+    const none = !state.summary.selects_count;
+    html += `<button class="btn btn-secondary btn-block" data-act="preview-reel" ${none ? "disabled" : ""}>See the shot list</button>`;
+    html += `<button class="btn btn-primary btn-block" data-act="export-reel" ${none ? "disabled" : ""}>Export reel timeline</button>`;
+    if (none) html += `<p class="hint">There are no selects to cut yet.</p>`;
+  }
+  if (box.dataset.html !== html) { box.innerHTML = html; box.dataset.html = html; }
+}
+
+async function pushReel(patch) {
+  const r = { ...state.reel, ...patch };
+  try { state = await invoke("set_reel", { reel: { pace: r.pace, length: r.length, order: r.order, shape: r.shape } }); renderAll(); }
+  catch (e) { showError("The reel settings were not changed", String(e)); }
+}
+
+async function chooseMusic() {
+  try {
+    const s = await invoke("choose_music");
+    if (s) { state = s; renderAll(); toast(`${icon("tick")} Found the beat of ${esc(s.reel.music_name)}: ${s.reel.tempo || "no steady"} beats per minute.`); }
+  } catch (e) { await refresh(); showError("The song could not be used", String(e)); }
+}
+
+async function previewReel() {
+  let plan;
+  try { plan = await invoke("plan_reel"); } catch (e) { showError("The reel could not be planned", String(e)); return; }
+  const rows = plan.shots.map((s, i) => `<tr><td class="num tabular">${i + 1}</td><td class="num tabular">${fmtClock(s.at)}</td><td class="num tabular">${s.length.toFixed(1)} s</td><td>${esc(s.clip_name)}</td><td class="num tabular">${fmtClock(s.source_start)}</td><td>${esc(CAMERA_WORDS[s.camera] || "Still")}${s.stretched ? " · stretched" : ""}${s.manual ? " · kept by hand" : ""}</td></tr>`).join("");
+  const notes = plan.notes.length ? `<p class="muted">${plan.notes.map(esc).join(" ")}</p>` : "";
+  const go = await modal("Reel shot list", `<p><strong class="num">${plan.shots.length}</strong> shots from ${plural(plan.clips_used, "clip")}, <span class="num">${fmtDur(plan.length)}</span>, cutting every ${plural(plan.beats_per_cut, "beat")} at <span class="num">${plan.tempo}</span> beats per minute. Chosen from ${plural(plan.selects_available, "select")}.</p>${notes}
+    <div class="modal-scroll"><table class="fit-table"><thead><tr><th class="num">Shot</th><th class="num">At</th><th class="num">Length</th><th>Clip</th><th class="num">From</th><th>Camera</th></tr></thead><tbody>${rows}</tbody></table></div>`,
+    [{ label: "Keep adjusting", value: false }, { label: "Export reel timeline", value: true, primary: true }]);
+  if (go) exportReel();
+}
+
+async function exportReel() {
+  try {
+    const r = await invoke("export_reel");
+    if (!r) return;
+    const warn = r.warnings.length ? `<p class="muted">${r.warnings.map(esc).join("<br>")}</p>` : "";
+    await modal("Reel exported", `<p>A reel of ${plural(r.selects, "shot")} with the song under it, written to <span class="selectable">${esc(r.folder)}</span>:</p><ul>${r.files.map((f) => `<li class="selectable">${esc(f)}</li>`).join("")}</ul>
+      <p class="muted">Import it the same way as the selects timeline. The shots carry no sound of their own, so you hear only the song.</p>${warn}`, [{ label: "Done", value: true, primary: true }]);
+  } catch (e) { showError("The reel was not exported", String(e)); }
+}
+
+function renderStillsStatus() {
+  const p = state.stills_progress;
+  const box = $("stills-status");
+  const html = p ? `<p class="update-line"><span class="spinner" aria-hidden="true"></span>Writing stills: <span class="num">${p[0]}</span> of <span class="num">${p[1] || "…"}</span></p><button class="btn btn-secondary btn-small" data-act="stop-stills">${icon("stop")}Stop writing stills</button>` : "";
+  if (box.dataset.html !== html) { box.innerHTML = html; box.dataset.html = html; }
+  $("btn-stills").disabled = !!p || !state.summary.selects_count;
+}
+
+function stillsSummary(st) {
+  if (!st) return "";
+  const failed = st.failed.length ? ` ${plural(st.failed.length, "still")} could not be written: ${st.failed.map(([n, w]) => `${n} (${w})`).join("; ")}.` : "";
+  return `<p>${plural(st.written, "still")} and a contact sheet in <span class="selectable">${esc(st.folder)}</span>.${st.cancelled ? " Stopped before the rest were written; the ones already written are kept." : ""}${esc(failed)}</p><p class="muted">Open Contact sheet.html in a browser to see them all; print it to save a PDF.</p>`;
+}
+
+async function exportStills() {
+  try {
+    const r = await invoke("export_stills");
+    if (!r) return;
+    await modal("Stills saved", stillsSummary(r), [{ label: "Done", value: true, primary: true }]);
+  } catch (e) { showError("The stills were not saved", String(e)); }
 }
 
 function profileHint() {
@@ -1073,7 +1417,7 @@ function wireSliders() {
     pushSelection();
   });
   $("btn-reset").addEventListener("click", () => {
-    localSel = { ...localSel, ...DEFAULT_SELECTION, camera: "any", set_aside_repeats: false };
+    localSel = { ...localSel, ...DEFAULT_SELECTION, camera: "any", set_aside_repeats: false, light: "any", set_aside_sound_problems: false, snap_to_pauses: true };
     pushSelection();
   });
   $("set-aside-repeats").addEventListener("change", (e) => {
@@ -1087,7 +1431,7 @@ function currentExport() {
   const v = $("timeline-rate").value;
   const rate = v === "auto" ? null : { num: Number(v.split("/")[0]), den: Number(v.split("/")[1]) };
   const layout = document.querySelector('input[name="layout"]:checked')?.value || "full_clips_below";
-  return { rate, drop_frame: $("drop-frame-row").hidden ? null : $("drop-frame").checked, layout, timeline_name: $("timeline-name").value };
+  return { rate, drop_frame: $("drop-frame-row").hidden ? null : $("drop-frame").checked, layout, timeline_name: $("timeline-name").value, handles: Number($("handles").value), stills: $("export-stills").checked };
 }
 async function pushExport(resetDrop) {
   const ex = currentExport();
@@ -1186,7 +1530,7 @@ async function exportTimeline() {
     const warn = r.warnings.length ? `<p class="muted">${r.warnings.map(esc).join("<br>")}</p>` : "";
     await modal("Timeline exported", `<p>${plural(r.selects, "select")} written to <span class="selectable">${esc(r.folder)}</span>:</p>
       <ul>${r.files.map((f) => `<li class="selectable">${esc(f)}</li>`).join("")}</ul>
-      <p class="muted">In DaVinci Resolve choose File, Import, Timeline and pick the .xml or .fcpxml. In Premiere Pro choose File, Import and pick the .xml. In Final Cut Pro choose File, Import, XML and pick the .fcpxml.</p>${warn}`,
+      <p class="muted">In DaVinci Resolve choose File, Import, Timeline and pick the .xml or .fcpxml. In Premiere Pro choose File, Import and pick the .xml. In Final Cut Pro choose File, Import, XML and pick the .fcpxml. Scene, light, camera movement and problems ride along as keywords and log notes, so you can search and collect by them.</p>${stillsSummary(r.stills)}${warn}`,
       [{ label: "Done", value: true, primary: true }]);
   } catch (e) { showError("The timeline was not exported", String(e)); }
 }
@@ -1308,6 +1652,16 @@ function wire() {
     else if (act === "stop-tracing") invoke("stop_tracing");
     else if (act === "fit") fitToEdits();
     else if (act === "retrace") invoke("retrace_finished_videos").then((s) => { state = s; renderAll(); });
+    else if (act === "keep") makeCall("keep", callTarget()?.mark?.stars || 0);
+    else if (act === "drop") makeCall("drop", 0);
+    else if (act === "clear-call") makeCall(null, 0);
+    else if (act === "star") { const n = Number(e.target.closest("[data-stars]").dataset.stars); const cur = callTarget()?.mark; makeCall("keep", cur?.call === "keep" && cur.stars === n ? n - 1 : n); }
+    else if (act === "report") openReport();
+    else if (act === "save-report") saveReport();
+    else if (act === "choose-music") chooseMusic();
+    else if (act === "preview-reel") previewReel();
+    else if (act === "export-reel") exportReel();
+    else if (act === "stop-stills") invoke("stop_stills");
     else if (act === "prev-select") stepSelect(-1);
     else if (act === "next-select") stepSelect(1);
     else if (e.target.closest("[data-viewmode]")) setViewMode(e.target.closest("[data-viewmode]").dataset.viewmode);
@@ -1315,6 +1669,13 @@ function wire() {
       const p = PRESETS.find((x) => x.id === e.target.closest("[data-preset]").dataset.preset);
       if (p && localSel) { localSel = { ...localSel, ...p.v }; renderPresets(); pushSelection(); }
     }
+    else if (e.target.closest("[data-light]")) {
+      if (localSel) { localSel.light = e.target.closest("[data-light]").dataset.light; renderExtraFilters(); pushSelection(); }
+    }
+    else if (e.target.closest("[data-pace]")) pushReel({ pace: e.target.closest("[data-pace]").dataset.pace });
+    else if (e.target.closest("[data-reel-length]")) { const v = e.target.closest("[data-reel-length]").dataset.reelLength; pushReel({ length: v ? Number(v) : null }); }
+    else if (e.target.closest("[data-order]")) pushReel({ order: e.target.closest("[data-order]").dataset.order });
+    else if (e.target.closest("[data-shape]")) pushReel({ shape: e.target.closest("[data-shape]").dataset.shape });
     else if (e.target.closest("[data-camera]")) {
       if (localSel) { localSel.camera = e.target.closest("[data-camera]").dataset.camera; renderFilters(); pushSelection(); }
     }
@@ -1336,6 +1697,14 @@ function wire() {
   $("btn-open").addEventListener("click", openProject);
   $("btn-save").addEventListener("click", (e) => saveProject(e.shiftKey));
   $("btn-export").addEventListener("click", exportTimeline);
+  $("btn-stills").addEventListener("click", exportStills);
+  $("btn-report").addEventListener("click", openReport);
+  $("handles").addEventListener("change", () => pushExport(false));
+  $("export-stills").addEventListener("change", () => pushExport(false));
+  $("place-input").addEventListener("change", pushPlaces);
+  $("clock-zone").addEventListener("change", pushPlaces);
+  $("snap-pauses").addEventListener("change", (e) => { if (localSel) { localSel.snap_to_pauses = e.target.checked; pushSelection(); } });
+  $("set-aside-sound").addEventListener("change", (e) => { if (localSel) { localSel.set_aside_sound_problems = e.target.checked; pushSelection(); } });
   $("btn-analysis").addEventListener("click", async () => {
     if (state?.analysis.running) await invoke("stop_analysis");
     else await invoke("start_analysis");
@@ -1366,11 +1735,16 @@ function wire() {
     const mod = e.metaKey || e.ctrlKey;
     if (mod && e.key.toLowerCase() === "s") { e.preventDefault(); saveProject(e.shiftKey); }
     if (mod && e.key.toLowerCase() === "o") { e.preventDefault(); openProject(); }
-    if (e.key === "Escape" && view.mode === "detail" && $("modal").hidden) { view = { mode: "list", clipId: null }; renderMain(); }
+    if (e.key === "Escape" && (view.mode === "detail" || view.mode === "report") && $("modal").hidden) { view = { mode: "list", clipId: null }; renderMain(); }
     const typing = ["INPUT", "SELECT", "TEXTAREA"].includes(document.activeElement?.tagName);
     if (view.mode === "detail" && detail && !typing && !mod && $("modal").hidden) {
       if (e.key === "ArrowLeft" || e.key === "ArrowRight") { e.preventDefault(); pinAt(viewer.pin + (e.key === "ArrowLeft" ? -1 : 1) * (e.shiftKey ? 5 : 1)); }
       if (e.key === "[" || e.key === "]") { e.preventDefault(); stepSelect(e.key === "[" ? -1 : 1); }
+      const k = e.key.toLowerCase();
+      if (k === "k") { e.preventDefault(); makeCall("keep", callTarget()?.mark?.stars || 0); }
+      if (k === "x") { e.preventDefault(); makeCall("drop", 0); }
+      if (k === "0" || k === "u") { e.preventDefault(); makeCall(null, 0); }
+      if (/^[1-5]$/.test(k)) { e.preventDefault(); makeCall("keep", Number(k)); }
     }
   });
   window.addEventListener("resize", () => { graphWidth = 0; if (view.mode === "detail") renderDetail(); });
@@ -1384,6 +1758,7 @@ function wire() {
     if (!probe) scheduleRefresh(true); else renderMain();
   });
   listen("drop-hover", (e) => { $("drop-overlay").hidden = !e.payload; });
+  listen("stills-progress", (e) => { if (state) { state.stills_progress = e.payload.done >= e.payload.total ? null : [e.payload.done, e.payload.total]; renderStillsStatus(); } });
   listen("add-result", (e) => {
     const r = e.payload;
     probe = null;
