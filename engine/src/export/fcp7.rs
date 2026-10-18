@@ -86,6 +86,47 @@ fn file_element(x: &mut Xml, tl: &Timeline, si: usize, written: &mut [bool]) {
     x.close();
 }
 
+/// Scale in percent that makes a clip fill the sequence frame, cut from the
+/// centre: the larger of the width and height ratios, from the clip's
+/// display size (after rotation, as `ClipInfo` stores it).
+pub fn fill_scale(tl: &Timeline, p: &Placed) -> f64 {
+    let s = &tl.sources[p.source].info;
+    if s.width == 0 || s.height == 0 || tl.width == 0 || tl.height == 0 {
+        return 100.0;
+    }
+    let ratio = (tl.width as f64 / s.width as f64).max(tl.height as f64 / s.height as f64);
+    (ratio * 100.0 * 1000.0).round() / 1000.0
+}
+
+/// The Basic Motion filter with a scale and a centred position, which is how
+/// Premiere Pro and DaVinci Resolve read a clip's size in the frame.
+fn basic_motion(x: &mut Xml, scale: f64) {
+    x.open("filter", &[]);
+    x.open("effect", &[]);
+    x.text("name", "Basic Motion");
+    x.text("effectid", "basic");
+    x.text("effectcategory", "motion");
+    x.text("effecttype", "motion");
+    x.text("mediatype", "video");
+    x.open("parameter", &[("authoringApp", "PremierePro".to_string())]);
+    x.text("parameterid", "scale");
+    x.text("name", "Scale");
+    x.text("valuemin", 0);
+    x.text("valuemax", 1000);
+    x.text("value", format!("{scale}"));
+    x.close();
+    x.open("parameter", &[("authoringApp", "PremierePro".to_string())]);
+    x.text("parameterid", "center");
+    x.text("name", "Center");
+    x.open("value", &[]);
+    x.text("horiz", 0);
+    x.text("vert", 0);
+    x.close();
+    x.close();
+    x.close();
+    x.close();
+}
+
 #[allow(clippy::too_many_arguments)]
 fn clipitem(
     x: &mut Xml,
@@ -115,6 +156,8 @@ fn clipitem(
         x.text("mediatype", "audio");
         x.text("trackindex", track);
         x.close();
+    } else if tl.fill {
+        basic_motion(x, fill_scale(tl, p));
     }
     if let Some(m) = &p.select {
         x.open("labels", &[]);
