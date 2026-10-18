@@ -684,7 +684,8 @@ fn place_run(sm: &ScoreSeries, bounds: &[f64], run: &Run, s: &SelectionSettings,
         segments.push(make_segment(sm, bounds, run.start, run.end, SegmentStatus::TooShort, s));
         return;
     }
-    let sound = sound.filter(|sd| s.snap_to_pauses && !sd.talking.is_empty());
+    let talking = sound.filter(|sd| !sd.talking.is_empty());
+    let sound = talking.filter(|_| s.snap_to_pauses);
     let needs_split = run.end - run.start > max + 1e-9;
     let mut parts = if needs_split && sm.motion.len() == sm.len() {
         split_at_rest(sm, bounds, run, min, max, s.keep_moves_whole, sound).unwrap_or_else(|| split(run.start, run.end, min, max))
@@ -703,7 +704,8 @@ fn place_run(sm: &ScoreSeries, bounds: &[f64], run: &Run, s: &SelectionSettings,
     }
     for (k, (a, b)) in parts.iter().copied().enumerate() {
         let mut g = make_segment(sm, bounds, a, b, SegmentStatus::Kept, s);
-        if let Some(sd) = sound {
+        // Ends that cut while someone talks are reported with the pause setting on or off.
+        if let Some(sd) = talking {
             g.speech_cuts = sd.talking_at(a + 0.02) as u8 + sd.talking_at(b - 0.02) as u8;
             g.snapped = snapped[k].0 + snapped[k].1;
         }

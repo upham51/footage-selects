@@ -697,7 +697,7 @@ pub fn retrace_finished_videos(state: State<'_, AppState>) -> StateDto {
 pub async fn fit_to_finished_videos(app: AppHandle) -> CmdResult<FitResult> {
     let snapshot = app.state::<AppState>().project.lock().unwrap().clone();
     selects_engine::taste::fit(&snapshot).ok_or_else(|| {
-        "None of the finished videos' shots were found in this project's clips, so there is nothing to learn from yet. Add the footage those videos were cut from, let it analyze, then try again.".to_string()
+        "There is nothing to learn from yet: no shots from your finished videos were found in these clips, and no stretch is kept by hand. Keep a few stretches you like with K, or add a video you cut from this footage, then try again.".to_string()
     })
 }
 

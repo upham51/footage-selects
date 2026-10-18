@@ -96,6 +96,8 @@ const ISSUE_WORDS = {
   flat: "Very flat light.",
 };
 const fmtStops = (v) => (v == null || !isFinite(v) ? "–" : `${v > 0.05 ? "+" : v < -0.05 ? "−" : ""}${Math.abs(v).toFixed(1)}`);
+/** Brightness against a normal exposure, in words: "1.1 stops brighter than normal". */
+const stopsWords = (v) => (v == null || !isFinite(v) ? "–" : Math.abs(v) < 0.15 ? "normal" : `${Math.abs(v).toFixed(1)} ${Math.abs(v) >= 0.95 && Math.abs(v) < 1.05 ? "stop" : "stops"} ${v > 0 ? "brighter" : "darker"} than normal`);
 const profileLabel = (id) => state?.profiles?.find((p) => p.id === id)?.label || id;
 const SEG_FILL = { kept: "#E7F1EE", too_short: "#EFF2F4", over_limit: "#FDF2E2", below_threshold: "#FCEDEC", set_aside: "#E8EDF4" };
 const SEG_INK = { kept: "#0F5C4E", too_short: "#7A8798", over_limit: "#9A5B00", below_threshold: "#B3261E", set_aside: "#1D3450" };
@@ -226,6 +228,8 @@ function statusCell(c) {
 }
 
 const SCORE_WORD = { focus: "Focus", exposure: "Exposure", stability: "Stability" };
+/** What a low score means in the picture. */
+const SCORE_PROBLEM = { focus: "Too soft", exposure: "Too dark or too bright", stability: "Too shaky" };
 
 /** Why an analyzed clip has no selects, with a shape and a word as well as color. */
 function noSelectHtml(r) {
@@ -244,10 +248,11 @@ function noSelectHtml(r) {
     text = bits.join(", ");
   } else {
     p = pill("red", "triangle", "Below threshold");
-    const word = SCORE_WORD[r.score] || r.score;
+    const word = (SCORE_WORD[r.score] || r.score).toLowerCase();
+    const problem = SCORE_PROBLEM[r.score] ? `${SCORE_PROBLEM[r.score]}: ` : "";
     text = r.kind === "average"
-      ? `${word} averaged ${r.average}, needs ${r.needs}`
-      : `${word} under ${r.needs} for ${r.share}% of the clip`;
+      ? `${problem}${word} scores ${r.average} on average, and selects need ${r.needs}`
+      : `${problem}${word} is under ${r.needs} for ${r.share}% of the clip`;
   }
   return `<div class="no-select">${p}<span>${esc(text)}</span></div>`;
 }
@@ -399,7 +404,10 @@ function checkNotes(seg) {
   if (seg.wobble != null && seg.wobble >= 0.35) bits.push("Jello: the picture wobbles within the frame.");
   for (const k of seg.sound || []) bits.push(`${SOUND_WORDS[k] || k}.`);
   if (seg.status === "kept" && seg.snapped) bits.push(seg.snapped === 2 ? "Both ends moved into pauses in the talking." : "One end moved into a pause in the talking.");
-  if (seg.status === "kept" && seg.speech_cuts) bits.push(seg.speech_cuts === 2 ? "Starts and ends mid-sentence: no pause was close enough." : "Cuts mid-sentence: no pause was close enough.");
+  if (seg.status === "kept" && seg.speech_cuts) {
+    const why = localSel?.snap_to_pauses === false ? ", since Start and end in a pause is off." : ": no pause was close enough.";
+    bits.push((seg.speech_cuts === 2 ? "Starts and ends mid-sentence" : "Cuts mid-sentence") + why);
+  }
   return bits.length ? " " + bits.join(" ") : "";
 }
 
@@ -486,10 +494,21 @@ const fmtWhen = (utc, offset) => {
   return `${d.getUTCFullYear()}-${p2(d.getUTCMonth() + 1)}-${p2(d.getUTCDate())} ${p2(d.getUTCHours())}:${p2(d.getUTCMinutes())}`;
 };
 
-function callCell(s) {
+/** A drop call that covers most of this stretch, when the stretch itself shows no sign of it. */
+function idleDrop(s, marks) {
+  if (s.manual || s.aside === "dropped") return null;
+  return (marks || []).find((m) => m.call === "drop" && Math.min(m.end, s.end) - Math.max(m.start, s.start) >= 0.5 * Math.min(s.end - s.start, m.end - m.start)) || null;
+}
+
+function callCell(s, marks) {
   if (s.manual) return `<span class="call call-keep">${icon("hand")}Kept${s.stars ? ` ${starsHtml(s.stars)}` : ""}</span>`;
-  if (s.aside === "dropped") return `<span class="call call-drop">${icon("cross")}Dropped</span>`;
+  if (s.aside === "dropped" || idleDrop(s, marks)) return `<span class="call call-drop">${icon("cross")}Dropped</span>`;
   return '<span class="muted">–</span>';
+}
+
+/** Says when a drop call covers a stretch that was not a select anyway. */
+function idleDropNote(s, marks) {
+  return idleDrop(s, marks) ? " You dropped it by hand too; that changes nothing while it is not a select, and keeps it out if new settings would choose it." : "";
 }
 
 function sceneRowHtml(d) {
@@ -585,8 +604,8 @@ function renderDetail() {
       const usedIn = (d.used || []).filter(([a, b, n]) => Math.min(b, s.end) - Math.max(a, s.start) > 0.25).map(([, , n]) => n);
       const usedText = usedIn.length ? ` Used in ${[...new Set(usedIn)].join(", ")}.` : "";
       const pinned = viewer.pin >= s.start && viewer.pin < s.end ? ' class="pinned"' : "";
-      return `<tr data-seg="${s.start}:${s.end}"${pinned} title="Show this stretch in the frame viewer"><td class="tabular nowrap">${fmtClock(s.start)} – ${fmtClock(s.end)}</td><td class="num tabular">${fmtDur(s.end - s.start)}</td><td>${pill(t, sh, wd)}</td><td class="why">${esc(whyText(s, d.selection, keptCount) + repeatNote(s) + checkNotes(s) + usedText)}</td>
-        <td class="nowrap">${callCell(s)}</td><td class="nowrap">${esc(CAMERA_WORDS[s.camera] || "Still")}</td><td class="num tabular">${pct(s.focus)}</td><td class="num tabular">${pct(s.exposure)}</td>${isLog ? `<td class="num tabular">${fmtStops(s.key_stops)}</td>` : ""}<td class="num tabular">${pct(s.stability)}</td><td class="num tabular">${pct(s.score)}</td></tr>`;
+      return `<tr data-seg="${s.start}:${s.end}"${pinned} title="Show this stretch in the frame viewer"><td class="tabular nowrap">${fmtClock(s.start)} – ${fmtClock(s.end)}</td><td class="num tabular">${fmtDur(s.end - s.start)}</td><td>${pill(t, sh, wd)}</td><td class="why">${esc(whyText(s, d.selection, keptCount) + repeatNote(s) + checkNotes(s) + idleDropNote(s, d.marks) + usedText)}</td>
+        <td class="nowrap">${callCell(s, d.marks)}</td><td class="nowrap">${esc(CAMERA_WORDS[s.camera] || "Still")}</td><td class="num tabular">${pct(s.focus)}</td><td class="num tabular">${pct(s.exposure)}</td>${isLog ? `<td class="num tabular">${fmtStops(s.key_stops)}</td>` : ""}<td class="num tabular">${pct(s.stability)}</td><td class="num tabular">${pct(s.score)}</td></tr>`;
     }).join("");
     const markLegend = (d.marks || []).length ? `<span class="legend-used"><svg class="icon" viewBox="0 0 14 14" aria-hidden="true"><rect x="1.5" y="3" width="11" height="8" rx="2" stroke="#2C4A6E"/></svg>Kept by hand</span><span class="legend-used"><svg class="icon" viewBox="0 0 14 14" aria-hidden="true"><rect x="1.5" y="3" width="11" height="8" rx="2" stroke="#B3261E"/></svg>Dropped by hand</span>` : "";
     const usedLegend = (d.used || []).length ? `<span class="legend-used"><svg class="icon" viewBox="0 0 14 14" aria-hidden="true"><rect x="1.5" y="3" width="11" height="8" rx="2" stroke="#9A5B00" stroke-dasharray="2.5 1.8"/></svg>Used in your edits</span>` : "";
@@ -608,7 +627,7 @@ function renderDetail() {
       <div class="readout" id="readout">Move the pointer over the graphs to read the scores and see the picture at that moment; click to hold it. Navy is the smoothed score used for selection, grey the raw per-frame score, the dashed line the threshold.</div>
       ${isLog ? stopsCard(d) : ""}
       <div class="seg-table"><h3 class="eyebrow">Every stretch of this clip</h3>
-        <table><thead><tr><th>Time</th><th class="num">Length</th><th>Result</th><th>Why</th><th>Your call</th><th>Camera</th><th class="num">Focus</th><th class="num">Exposure</th>${isLog ? '<th class="num" title="Middle tones in stops from middle grey">Stops</th>' : ""}<th class="num">Stability</th><th class="num">Overall</th></tr></thead><tbody>${segRows}</tbody></table></div>`;
+        <table><thead><tr><th>Time</th><th class="num">Length</th><th>Result</th><th>Why</th><th>Your call</th><th>Camera</th><th class="num">Focus</th><th class="num">Exposure</th>${isLog ? '<th class="num" title="How bright the middle tones are, in stops brighter (+) or darker (−) than a normal exposure">Brightness</th>' : ""}<th class="num">Stability</th><th class="num">Overall</th></tr></thead><tbody>${segRows}</tbody></table></div>`;
   }
 
   panel.innerHTML = `<div class="detail">
@@ -743,7 +762,7 @@ function stopsCard(d) {
   const zones = `<rect x="0" y="0" width="${at(-5)}" height="${H}" fill="#FCEDEC"/><rect x="${at(-5)}" y="0" width="${at(-1.5) - at(-5)}" height="${H}" fill="#FDF2E2"/><rect x="${at(4.5)}" y="0" width="${W - at(4.5)}" height="${H}" fill="#FCEDEC"/><line x1="${at(0)}" x2="${at(0)}" y1="0" y2="${H}" stroke="#C9A227" stroke-width="2"/>`;
   const ticks = [-6, -4, -2, 0, 2, 4].map((v) => `<span class="${v === 0 ? "zero" : ""}" style="left:${((at(v) / W) * 100).toFixed(2)}%">${v > 0 ? "+" + v : v < 0 ? "−" + -v : "0"}</span>`).join("");
   return `<div class="stops-card">
-    <div class="stops-head"><h3 class="eyebrow eyebrow-dark">Middle tones in stops</h3><span class="stops-note num">Average ${fmtStops(mean)} stops${clipped > 0.0005 ? ` · ${sharePct(clipped)} clipped` : ""}</span></div>
+    <div class="stops-head"><h3 class="eyebrow eyebrow-dark">How bright, in stops</h3><span class="stops-note num">On average ${stopsWords(mean)}${clipped > 0.0005 ? ` · ${sharePct(clipped)} clipped` : ""}</span></div>
     <svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" class="stops-svg" role="img" aria-label="How often the middle tones sit at each level, in stops from middle grey">${zones}${bars}</svg>
     <div class="stops-axis num">${ticks}</div>
     <p class="hint">Each bar counts the scored moments whose middle tones sit at that level. Gold is middle grey; red is more than 5 stops under, or near the clip point.</p>
@@ -801,7 +820,7 @@ function attachHover(w, d) {
     const seg = d.segments.find((s) => t >= s.start && t < s.end);
     const word = seg ? SEG_STATUS[seg.status][2] : "Not measured yet";
     const ks = d.raw.key_stops || [], cl = d.raw.clipped || [];
-    const logBits = ks.length ? ` · Middle tones <span class="num">${fmtStops(ks[i])}</span> stops${cl[i] > 0.005 ? ` · <span class="num">${(cl[i] * 100).toFixed(cl[i] < 0.1 ? 1 : 0)}%</span> clipped` : ""}` : "";
+    const logBits = ks.length ? ` · Brightness <span class="num">${stopsWords(ks[i])}</span>${cl[i] > 0.005 ? ` · <span class="num">${(cl[i] * 100).toFixed(cl[i] < 0.1 ? 1 : 0)}%</span> clipped` : ""}` : "";
     if (viewer.mode !== "off") showFrameAt(t);
     paintPoint(t, true);
     readout.innerHTML = `At <span class="num">${fmtClock(t)}</span> · Focus <span class="num">${pct(d.smoothed.focus[i])}</span> · Exposure <span class="num">${pct(d.smoothed.exposure[i])}</span>${logBits} · Stability <span class="num">${pct(d.smoothed.stability[i])}</span> · ${esc(word)}`;
@@ -985,10 +1004,13 @@ async function makeCall(call, stars) {
   const tg = callTarget();
   if (!tg || !detail) return;
   try {
+    const wasSelect = tg.seg ? tg.seg.status === "kept" : tg.mark?.call === "keep";
     state = await invoke("mark_stretch", { id: view.clipId, start: tg.start, end: tg.end, call, stars: stars || 0 });
     renderAllButSide();
     syncSide();
     await refreshDetail();
+    if (call === "drop" && !wasSelect) toast(`Dropped <span class="num">${fmtClock(tg.start)} – ${fmtClock(tg.end)}</span>. It was not a select, so nothing changes now; it stays out if new settings would choose it.`);
+    else if (call === "keep" && !wasSelect) toast(`Kept <span class="num">${fmtClock(tg.start)} – ${fmtClock(tg.end)}</span> by hand. It is now a select whatever its scores, and goes into the export.`);
   } catch (e) { showError("Your call was not saved", String(e)); }
 }
 
@@ -1264,6 +1286,11 @@ function renderFilters() {
       : "Finds selects that look like a better select in another clip, such as a second take from the same spot, and keeps only the best.";
 }
 
+/** Selects kept by hand pass every filter; say so, or the counts look stuck. */
+function handNote(a) {
+  return a.hand_kept ? ` ${plural(a.hand_kept, "select")} you kept by hand ${a.hand_kept === 1 ? "stays" : "stay"} whatever the filter says.` : "";
+}
+
 function renderExtraFilters() {
   const a = state.aside || {};
   const light = localSel.light || "any";
@@ -1274,10 +1301,10 @@ function renderExtraFilters() {
     ? known
       ? `Light is known for ${known} of ${plural(total, "clip")}, from the sun's height when and where each was recorded.${unknown ? ` ${plural(unknown, "clip")} ${unknown === 1 ? "has" : "have"} no time or place; add where you shot under Places and time.` : ""}`
       : "Keep only footage shot in a certain light. It needs each clip's recording time and place; phones and DJI drones record both, and you can add the place for other cameras under Places and time."
-    : `${a.light ? `${plural(a.light, "good stretch is", "good stretches are")} set aside.` : "Nothing is set aside."} Clips with no known light are set aside too${unknown ? ` (${unknown} now)` : ""}.`;
+    : `${a.light ? `${plural(a.light, "good stretch is", "good stretches are")} set aside.` : "Nothing is set aside."} Clips with no known light are set aside too${unknown ? ` (${unknown} now)` : ""}.${handNote(a)}`;
   $("set-aside-sound").checked = !!localSel.set_aside_sound_problems;
   $("sound-hint").textContent = localSel.set_aside_sound_problems
-    ? (a.sound ? `${plural(a.sound, "good stretch is", "good stretches are")} set aside for wind noise, clipped sound or a dropout.` : "No select has a sound problem, so nothing is set aside.")
+    ? (a.sound ? `${plural(a.sound, "good stretch is", "good stretches are")} set aside for strong wind, clipped sound or a dropout.` : "No select has a sound problem, so nothing is set aside.") + handNote(a)
     : "Wind noise, clipped sound and dropouts are always listed. Tick this when you will use the sound, to keep only selects where it is clean.";
   $("snap-pauses").checked = localSel.snap_to_pauses !== false;
   const talk = state.talking_clips || 0;
@@ -1286,22 +1313,32 @@ function renderExtraFilters() {
     : "When someone talks, selects start just before a sentence and end just after one. No talking has been found yet.";
 }
 
+/** Familiar places for common time zones, so the list reads without knowing UTC offsets. */
+const ZONE_PLACES = {
+  "-600": "Hawaii", "-540": "Alaska", "-480": "Los Angeles in winter", "-420": "Los Angeles in summer, Denver in winter",
+  "-360": "Denver in summer, Chicago in winter", "-300": "Chicago in summer, New York in winter", "-240": "New York in summer",
+  "-180": "Rio de Janeiro", "0": "the clock is on UTC, London in winter", "60": "London in summer, Paris in winter",
+  "120": "Paris in summer, Cape Town", "180": "Istanbul, Nairobi", "240": "Dubai", "330": "India", "420": "Bangkok",
+  "480": "Singapore, Perth", "540": "Tokyo", "600": "Sydney in winter", "660": "Sydney in summer", "720": "Auckland in winter", "780": "Auckland in summer",
+};
+
 function renderPlaces() {
   const pl = state.places || {};
   const inp = $("place-input");
   if (document.activeElement !== inp) inp.value = pl.location ? `${pl.location[0]}, ${pl.location[1]}` : "";
   const zs = $("clock-zone");
   if (!zs.dataset.filled) {
-    const opts = ['<option value="auto">Work it out</option>'];
+    const opts = ['<option value="auto">Guess from the clips</option>'];
     for (let m = -12 * 60; m <= 14 * 60; m += 30) {
       if (m % 60 !== 0 && ![-570, -210, 210, 270, 330, 345, 390, 525, 570, 630].includes(m) && ![-150, 150, 330, 570, 630].includes(m)) continue;
       const h = Math.floor(Math.abs(m) / 60), mm = Math.abs(m) % 60;
-      opts.push(`<option value="${m}">UTC${m < 0 ? "−" : "+"}${h}${mm ? ":" + String(mm).padStart(2, "0") : ""}</option>`);
+      const where = ZONE_PLACES[m] ? ` · ${ZONE_PLACES[m]}` : "";
+      opts.push(`<option value="${m}">UTC${m < 0 ? "−" : "+"}${h}${mm ? ":" + String(mm).padStart(2, "0") : ""}${where}</option>`);
     }
     zs.innerHTML = opts.join(""); zs.dataset.filled = "1";
   }
   if (document.activeElement !== zs) zs.value = pl.clock_offset_minutes == null ? "auto" : String(pl.clock_offset_minutes);
-  $("places-hint").textContent = "Phones and DJI drones record where and when. Many cameras record only their own clock time, without a time zone: Work it out uses the zone other clips state, or the place's longitude, which can be an hour out. Setting it is more exact.";
+  $("places-hint").textContent = "Phones and DJI drones record where and when, and Sony cameras record the time in UTC. Other cameras often record only the time on their clock, without saying which time zone it was set to. Guess from the clips uses the zone other clips state, or else picks between UTC and the place's local time by which one puts bright pictures in daylight. If times or light look wrong, choose the zone the camera's clock was set to.";
 }
 
 async function pushPlaces() {
@@ -1448,9 +1485,19 @@ function renderTaste() {
     const reasons = t.misses.map(([, n], i) => `${n} ${state.taste.miss_words[i]}`).join("; ");
     html += `<p class="taste-line"><strong class="num">${t.kept} of ${t.used}</strong> shots your edits used are kept by these settings, from ${plural(t.clips_used, "clip")}.</p>`;
     if (dropped) html += `<p class="hint">${plural(dropped, "used shot")} would be left out: ${esc(reasons)}.</p>`;
-    html += `<button class="btn btn-primary btn-block" data-act="fit" ${tr ? "disabled" : ""}>Fit settings to my edits</button>`;
   } else if (fv.length && !tr) {
     html += `<p class="hint">None of these videos' shots were found in the clips analyzed so far. They may come from footage that is not in this project, or from clips still waiting to be analyzed.</p>`;
+  }
+  if (t && (t.hand || t.dropped)) {
+    const bits = [];
+    if (t.hand) bits.push(`the settings alone would keep <span class="num">${t.hand_kept} of ${t.hand}</span> stretches you kept by hand`);
+    if (t.dropped) bits.push(`<span class="num">${t.dropped_kept} of ${t.dropped}</span> you dropped`);
+    html += `<p class="hint">Your calls by hand count too: ${bits.join(", and ")}.</p>`;
+  }
+  if (t && (t.used || t.hand)) {
+    html += `<button class="btn btn-primary btn-block" data-act="fit" ${tr ? "disabled" : ""}>Fit settings to my edits</button>`;
+  } else if (t && t.dropped && !fv.length) {
+    html += `<p class="hint">Keep a few stretches you like by hand (K) and the sliders can be fitted to your calls.</p>`;
   }
   html += `<button class="btn btn-secondary btn-block fv-add" data-act="add-finished" ${tr ? "disabled" : ""}>${icon("film")}Add finished videos</button>`;
   if (box.dataset.html !== html) { box.innerHTML = html; box.dataset.html = html; }
@@ -1494,17 +1541,28 @@ async function fitToEdits() {
   $("toast").hidden = true;
   const b = f.before, a = f.after;
   const same = ["focus_min", "exposure_min", "stability_min", "smoothing", "min_length", "max_per_clip"].every((k) => f.settings[k] === state.selection[k]);
+  // In a fit, used and kept count stretches kept by hand as well; split them out.
+  const vb = { used: b.used - b.hand, kept: b.kept - b.hand_kept }, va = { used: a.used - a.hand, kept: a.kept - a.hand_kept };
+  const nowLine = [];
+  if (vb.used) nowLine.push(`<strong class="num">${vb.kept} of ${vb.used}</strong> shots your edits used`);
+  if (b.hand) nowLine.push(`<strong class="num">${b.hand_kept} of ${b.hand}</strong> stretches you kept by hand`);
   if (same) {
-    await modal("Your settings already fit your edits", `<p>No nearby settings keep more of the shots you used without making the selects much longer. They keep <strong class="num">${b.kept} of ${b.used}</strong> now.</p>`, [{ label: "Done", value: true, primary: true }]);
+    await modal("Your settings already fit your edits", `<p>No nearby settings keep more of what you chose without making the selects much longer. They keep ${nowLine.join(" and ")} now.</p>`, [{ label: "Done", value: true, primary: true }]);
     return;
   }
   let held;
   if (f.held_out_kept_share != null) {
     held = `<p>Checked on each finished video with settings learned from the others only: they kept <strong class="num">${Math.round(f.held_out_kept_share * 100)}%</strong> of that video's shots, against <span class="num">${Math.round(f.held_out_before_share * 100)}%</span> with your current settings.</p>`;
-  } else {
+  } else if (b.videos) {
     held = `<p class="muted">With one finished video, these settings could be tuned to that one edit. Add another and the fit is also checked on a video it has not seen.</p>`;
+  } else {
+    held = `<p class="muted">Learned from your calls by hand only, so with a few calls the fit follows them closely. Stretches you kept by hand stay kept whatever the sliders say; this only changes what the settings choose on their own.</p>`;
   }
-  const body = `<p>Shots your edits used that are kept: <strong class="num">${b.kept} of ${b.used}</strong> now, <strong class="num">${a.kept} of ${a.used}</strong> with these settings. Selects in total: <span class="num">${fmtDur(b.selects_seconds)}</span> now, <span class="num">${fmtDur(a.selects_seconds)}</span> with these settings.</p>
+  const lines = [];
+  if (vb.used) lines.push(`Shots your edits used that are kept: <strong class="num">${vb.kept} of ${vb.used}</strong> now, <strong class="num">${va.kept} of ${va.used}</strong> with these settings.`);
+  if (b.hand) lines.push(`Stretches you kept by hand that the settings alone would keep: <strong class="num">${b.hand_kept} of ${b.hand}</strong> now, <strong class="num">${a.hand_kept} of ${a.hand}</strong> with these settings.`);
+  if (b.dropped) lines.push(`Stretches you dropped that the settings would still choose: <span class="num">${b.dropped_kept} of ${b.dropped}</span> now, <span class="num">${a.dropped_kept} of ${a.dropped}</span> with these settings.`);
+  const body = `<p>${lines.join(" ")} Selects in total: <span class="num">${fmtDur(b.selects_seconds)}</span> now, <span class="num">${fmtDur(a.selects_seconds)}</span> with these settings.</p>
     <table class="fit-table"><thead><tr><th>Setting</th><th class="num">Now</th><th class="num">Fitted</th></tr></thead><tbody>${settingRows(state.selection, f.settings)}</tbody></table>
     ${held}<p class="muted">Only the sliders move. You can change them by hand afterwards, and nothing is analyzed again.</p>`;
   const go = await modal("Settings fitted to your edits", body, [

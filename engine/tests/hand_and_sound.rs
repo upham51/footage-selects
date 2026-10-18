@@ -108,6 +108,8 @@ fn long_takes_are_cut_in_the_pauses_between_sentences() {
     let off = select_candidates_with(&s, 24.0, &st, &ClipExtras { sound: Some(&map), ..Default::default() });
     let mid = off.kept().flat_map(|g| [g.start, g.end]).filter(|&t| map.talking_at(t + 0.01) && map.talking_at(t - 0.01)).count();
     assert!(mid > 0);
+    // And the table is told which selects cut mid-sentence.
+    assert!(off.kept().any(|g| g.speech_cuts > 0), "{:?}", off.kept().map(|g| (g.start, g.end, g.speech_cuts)).collect::<Vec<_>>());
 }
 
 #[test]
