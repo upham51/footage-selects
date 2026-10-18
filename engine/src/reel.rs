@@ -1,7 +1,10 @@
 //! Cutting a reel to music.
 //!
 //! The song's beats and bars come from `beats`. Cuts fall every so many
-//! beats, starting on a bar, so the reel is a row of slots between cuts. Each
+//! beats, starting on a bar, so the reel is a row of slots between cuts. A
+//! first bar that starts less than half a slot into the song does not get a
+//! cut of its own (the first shot runs from zero to the next cut), and the
+//! end is only cut short of a beat when at least half a slot is left. Each
 //! slot gets one select: the best ones are chosen first, then placed in the
 //! order they were shot (or best first), avoiding two shots from the same
 //! clip in a row and alternating still and moving shots where it can. Inside
@@ -175,13 +178,20 @@ pub fn plan(project: &Project, selections: &[ClipSelection], scenes: &[ClipScene
     let every = settings.pace.beats_per_cut(grid.tempo);
     let max = settings.length.unwrap_or(music.duration).min(music.duration).max(1.0);
     let mut cuts = cut_points(grid, every, max);
-    if cuts.first().map(|&c| c > 0.05).unwrap_or(true) {
-        cuts.insert(0, 0.0);
+    let slot = every as f64 * 60.0 / grid.tempo.max(1.0);
+    match cuts.first().copied() {
+        // A first bar starting just after zero would leave a sliver of a
+        // shot before it, so the first shot runs from zero to the next cut
+        // instead. The music still starts at zero, so every later cut stays
+        // on its beat.
+        Some(c) if c > 0.05 && c < 0.5 * slot && cuts.len() >= 2 => cuts[0] = 0.0,
+        Some(c) if c <= 0.05 => {}
+        _ => cuts.insert(0, 0.0),
     }
     // End on the last cut at or before the length asked for, or on the
     // length itself when no cut comes close.
     if let Some(&last) = cuts.last() {
-        if max - last > 0.5 * every as f64 * 60.0 / grid.tempo.max(1.0) && max - last > 0.4 {
+        if max - last > 0.5 * slot && max - last > 0.4 {
             cuts.push(max);
         }
     }

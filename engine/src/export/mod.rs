@@ -526,6 +526,39 @@ pub fn write_all(project: &Project, base: &Path) -> Result<Written, ExportError>
     write_timeline(&tl, base, warnings)
 }
 
+/// File extensions that are taken off a typed name before it names files or
+/// folders: the four this app writes, the pages and project it saves, and a
+/// few other timeline and text formats a person might type out of habit.
+pub const KNOWN_EXTENSIONS: &[&str] = &[
+    "xml", "fcpxml", "fcpxmld", "edl", "csv", "html", "htm", "otio", "aaf", "drp", "txt", "json", "pdf", crate::project::PROJECT_EXTENSION,
+];
+
+/// `name` without any known extensions at its end, compared ignoring case:
+/// "Selects.xml" and "Selects.xml.xml" give "Selects", "Day 1.2" stays as it
+/// is. A name that is nothing but an extension is kept.
+pub fn strip_known_extensions(name: &str) -> &str {
+    let mut s = name.trim_end();
+    while let Some((stem, ext)) = s.rsplit_once('.') {
+        if stem.trim().is_empty() || !KNOWN_EXTENSIONS.iter().any(|k| k.eq_ignore_ascii_case(ext)) {
+            break;
+        }
+        s = stem.trim_end();
+    }
+    s
+}
+
+/// The path the four export files are named from: the chosen file without
+/// its extension and without any known ones before that, so "Selects.xml"
+/// (or "Selects.xml.xml" from a save box that adds its own) writes
+/// Selects.xml, Selects.fcpxml and so on.
+pub fn export_base(path: &Path) -> PathBuf {
+    let base = path.with_extension("");
+    match base.file_name().and_then(|n| n.to_str()) {
+        Some(n) => base.with_file_name(strip_known_extensions(n)),
+        None => base,
+    }
+}
+
 /// Write the four files for any timeline.
 pub fn write_timeline(tl: &Timeline, base: &Path, warnings: Vec<String>) -> Result<Written, ExportError> {
     let outputs = [
@@ -686,3 +719,23 @@ pub fn build_reel_timeline(project: &Project, plan: &crate::reel::ReelPlan, musi
     });
     tl
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn known_extensions_come_off_typed_names() {
+        assert_eq!(strip_known_extensions("Selects.xml"), "Selects");
+        assert_eq!(strip_known_extensions("Selects.XML.fcpxml "), "Selects");
+        assert_eq!(strip_known_extensions("Day 1.2"), "Day 1.2");
+        assert_eq!(strip_known_extensions("Shoot.selects"), "Shoot");
+        assert_eq!(strip_known_extensions(".xml"), ".xml");
+        assert_eq!(strip_known_extensions("Selects"), "Selects");
+        assert_eq!(export_base(Path::new("/out/Selects.xml")), PathBuf::from("/out/Selects"));
+        assert_eq!(export_base(Path::new("/out/Selects.xml.xml")), PathBuf::from("/out/Selects"));
+        assert_eq!(export_base(Path::new("/out/Day 1.edl")), PathBuf::from("/out/Day 1"));
+        assert_eq!(export_base(Path::new("/out/Selects")), PathBuf::from("/out/Selects"));
+    }
+}
+

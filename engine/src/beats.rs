@@ -37,7 +37,12 @@
 //!    from beat to beat. Beats at the start and end whose onsets are weaker
 //!    than 30% of the median beat (quiet intros, fades, silence) are replaced
 //!    by a steady grid at the local beat period of the nearest strong part,
-//!    extended to cover the whole song.
+//!    extended to cover the whole song. Runs of weak beats inside the song
+//!    (breakdowns) are respaced evenly between the strong beats either side.
+//!    The reported tempo comes from a least squares line through the strong
+//!    beats against beat numbers counted in whole periods (`fit_period`), so
+//!    a beat the tracker added or lost in a fill or a breakdown does not
+//!    move it; the edge grids use the same fitted period.
 //! 4. Bars. Four beats a bar is assumed. Of the four ways to group beats into
 //!    bars, the one whose first beats carry the most low-frequency rise (kick
 //!    drums) plus half the overall onset strength wins.
@@ -81,6 +86,8 @@ const LOG_GAMMA: f32 = 100.0;
 const SILENCE_RMS: f64 = 1e-4;
 /// Beats weaker than this share of the median beat count as weak at the edges.
 const WEAK_EDGE: f32 = 0.3;
+/// Beats at each end of the strong part whose period continues the grid outward.
+const EDGE_BEATS: usize = 16;
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct MusicInfo {
@@ -345,19 +352,29 @@ pub fn analyze_music(samples: &[f32], rate: u32) -> BeatGrid {
     let strong = |s: f32| med > 0.0 && s >= WEAK_EDGE * med;
     let first = strengths.iter().position(|&s| strong(s));
     let last = strengths.iter().rposition(|&s| strong(s));
-    let (mut core, p_start, p_end) = match (first, last) {
+    let (mut core, fitted) = match (first, last) {
         (Some(a), Some(b)) => {
             let core: Vec<f64> = times[a..=b].to_vec();
-            let ps = edge_period(&core[..core.len().min(9)]).unwrap_or(period_s);
-            let pe = edge_period(&core[core.len().saturating_sub(9)..]).unwrap_or(period_s);
-            (core, ps, pe)
+            let fitted = fit_period(&core, period_s);
+            // Quiet stretches inside the song (breakdowns) are gridded between
+            // the strong beats either side, so cuts there stay on the beat.
+            let core = regularise_weak_runs(&core, &strengths[a..=b], &strong, fitted.unwrap_or(period_s));
+            (core, fitted)
         }
         _ => {
             // No strong beats at all: one beat at the best guess, gridded out.
             let t0 = times.first().copied().unwrap_or(0.0);
-            (vec![t0], period_s, period_s)
+            (vec![t0], None)
         }
     };
+    // The beat period of the whole song, from a line through the strong beats
+    // that is not thrown by an extra or missing beat; the autocorrelation's
+    // when there are too few.
+    let song_period = fitted.unwrap_or(period_s);
+    // The grid at either end continues the local period of the beats next to it.
+    let edge = |run: &[f64]| fit_period(run, song_period).filter(|p| (p / song_period - 1.0).abs() < 0.08).unwrap_or(song_period);
+    let p_start = edge(&core[..core.len().min(EDGE_BEATS)]);
+    let p_end = edge(&core[core.len().saturating_sub(EDGE_BEATS)..]);
     core.retain(|t| *t >= 0.0 && *t < duration);
     if core.is_empty() {
         core.push(0.0);
@@ -379,14 +396,8 @@ pub fn analyze_music(samples: &[f32], rate: u32) -> BeatGrid {
         times.push(t);
         t += p_end;
     }
-
-    // Tempo from a straight line through the strong beats, which averages
-    // out frame rounding; the autocorrelation tempo when there are too few.
     let core_times = &times[core_first..core_first + core_len];
-    let bpm = match line_slope(core_times) {
-        Some(s) if core_len >= 4 && s > 0.0 => 60.0 / s,
-        _ => 60.0 / period_s,
-    };
+    let bpm = 60.0 / song_period;
 
     // Strength at each beat, 1 for the strongest.
     let raw: Vec<f32> = times.iter().map(|&t| onset_at(t, 1, &env.onset)).collect();
@@ -807,14 +818,118 @@ fn refine_peak(onset: &[f32], frame: usize, reach: usize) -> f64 {
     i as f64 + parabolic(onset[i - 1] as f64, onset[i] as f64, onset[i + 1] as f64)
 }
 
-/// Median beat gap of a run of beats, in seconds.
-fn edge_period(times: &[f64]) -> Option<f64> {
-    if times.len() < 3 {
+/// The beat period, in seconds, of a run of beat times, from a least squares
+/// line through the times against beat numbers. Each beat is numbered by how
+/// many whole periods of `guess` (then of the line's own period, three
+/// rounds) it lies after the first beat of its run, so a beat the tracker
+/// added between two real ones, or one it missed, does not tilt the line the
+/// way numbering the beats one by one would. A beat more than a fifth of a
+/// period from a whole count is left out; after more than two of those in a
+/// row a new run starts with its own offset (the tracker has moved to the
+/// off-beat for a while). Beats more than 12% of a period off their run's
+/// line are dropped before each fit is final. None for fewer than four beats
+/// that can be counted.
+fn fit_period(times: &[f64], guess: f64) -> Option<f64> {
+    if times.len() < 4 || !(guess > 0.0) {
         return None;
     }
-    let gaps: Vec<f32> = times.windows(2).map(|w| (w[1] - w[0]) as f32).collect();
-    let m = median(&gaps) as f64;
-    (m > 0.0).then_some(m)
+    let mut period = guess;
+    for _ in 0..3 {
+        let runs = number_beats(times, period);
+        let mut p = pooled_slope(&runs)?;
+        // Drop the beats far from their run's line, then fit again.
+        let trimmed: Vec<Vec<(f64, f64)>> = runs
+            .iter()
+            .map(|run| {
+                let (mi, mt) = means(run);
+                run.iter().copied().filter(|&(i, t)| (t - (mt + p * (i - mi))).abs() <= 0.12 * p).collect()
+            })
+            .collect();
+        if let Some(q) = pooled_slope(&trimmed) {
+            p = q;
+        }
+        if !(p > 0.0) || (p / guess - 1.0).abs() > 0.5 {
+            return None;
+        }
+        period = p;
+    }
+    Some(period)
+}
+
+/// Runs of (beat number, time), each counted in whole periods from its own
+/// first beat, so small errors in each gap do not add up to a lost beat.
+fn number_beats(times: &[f64], period: f64) -> Vec<Vec<(f64, f64)>> {
+    let mut runs: Vec<Vec<(f64, f64)>> = vec![vec![(0.0, times[0])]];
+    let (mut anchor, mut n, mut skipped) = (times[0], 0.0f64, 0usize);
+    for &t in &times[1..] {
+        let r = (t - anchor) / period;
+        let k = r.round();
+        if k > n && (r - k).abs() <= 0.2 {
+            n = k;
+            skipped = 0;
+            runs.last_mut().unwrap().push((n, t));
+        } else {
+            skipped += 1;
+            if skipped > 2 {
+                runs.push(vec![(0.0, t)]);
+                anchor = t;
+                n = 0.0;
+                skipped = 0;
+            }
+        }
+    }
+    runs
+}
+
+fn means(run: &[(f64, f64)]) -> (f64, f64) {
+    let n = run.len().max(1) as f64;
+    (run.iter().map(|p| p.0).sum::<f64>() / n, run.iter().map(|p| p.1).sum::<f64>() / n)
+}
+
+/// The least squares slope shared by several runs, each with its own offset.
+/// None with fewer than four beats in runs of three or more.
+fn pooled_slope(runs: &[Vec<(f64, f64)>]) -> Option<f64> {
+    let (mut sxy, mut sxx, mut count) = (0.0, 0.0, 0usize);
+    for run in runs.iter().filter(|r| r.len() >= 3) {
+        let (mi, mt) = means(run);
+        for &(i, t) in run {
+            sxy += (i - mi) * (t - mt);
+            sxx += (i - mi) * (i - mi);
+        }
+        count += run.len();
+    }
+    (count >= 4 && sxx > 0.0).then(|| sxy / sxx)
+}
+
+/// Replace each run of two or more weak beats between strong ones with beats
+/// evenly spaced between those strong beats, when a whole number of `period`
+/// fits between them to within 8%. Otherwise the run is left as tracked.
+fn regularise_weak_runs(times: &[f64], strengths: &[f32], strong: &dyn Fn(f32) -> bool, period: f64) -> Vec<f64> {
+    let mut out = Vec::with_capacity(times.len());
+    let mut i = 0;
+    while i < times.len() {
+        out.push(times[i]);
+        // The next strong beat after a strong one.
+        if strong(strengths[i]) {
+            if let Some(off) = strengths[i + 1..].iter().position(|&s| strong(s)) {
+                let j = i + 1 + off;
+                if j - i > 2 && period > 0.0 {
+                    let span = times[j] - times[i];
+                    let n = (span / period).round();
+                    if n >= 1.0 && (span / n / period - 1.0).abs() <= 0.08 {
+                        let step = span / n;
+                        for k in 1..n as usize {
+                            out.push(times[i] + k as f64 * step);
+                        }
+                        i = j;
+                        continue;
+                    }
+                }
+            }
+        }
+        i += 1;
+    }
+    out
 }
 
 fn median(v: &[f32]) -> f32 {
@@ -824,23 +939,6 @@ fn median(v: &[f32]) -> f32 {
     let mut s = v.to_vec();
     s.sort_by(f32::total_cmp);
     s[s.len() / 2]
-}
-
-/// Least squares slope of times against their index.
-fn line_slope(times: &[f64]) -> Option<f64> {
-    let n = times.len();
-    if n < 2 {
-        return None;
-    }
-    let mx = (n - 1) as f64 / 2.0;
-    let my = times.iter().sum::<f64>() / n as f64;
-    let (mut sxy, mut sxx) = (0.0, 0.0);
-    for (i, t) in times.iter().enumerate() {
-        let dx = i as f64 - mx;
-        sxy += dx * (t - my);
-        sxx += dx * dx;
-    }
-    (sxx > 0.0).then(|| sxy / sxx)
 }
 
 /// Share of onset energy within two frames of a beat, above what a random
@@ -1147,6 +1245,107 @@ mod tests {
         let none: Value = serde_json::from_str(r#"{"streams":[],"format":{"duration":"3"}}"#).unwrap();
         let err = parse_music_probe(&none, Path::new("a.mp4")).unwrap_err();
         assert!(err.contains("no sound"), "{err}");
+    }
+
+    fn tone(out: &mut [f32], at: f64, f: f64, amp: f64, len: f64, rate: u32) {
+        let s0 = (at * rate as f64).round() as usize;
+        for j in 0..(len * rate as f64) as usize {
+            if s0 + j >= out.len() {
+                break;
+            }
+            let t = j as f64 / rate as f64;
+            let env = (t / 0.01).min(1.0) * (-3.0 * t).exp();
+            let w = 2.0 * std::f64::consts::PI * f * t;
+            out[s0 + j] += (amp * env * (w.sin() + 0.3 * (2.0 * w).sin())) as f32;
+        }
+    }
+
+    fn burst(out: &mut [f32], at: f64, amp: f32, decay: f64, len: f64, rate: u32, rng: &mut Lcg) {
+        let s0 = (at * rate as f64).round() as usize;
+        for j in 0..(len * rate as f64) as usize {
+            if s0 + j >= out.len() {
+                break;
+            }
+            let t = j as f64 / rate as f64;
+            out[s0 + j] += amp * rng.next() * (-decay * t).exp() as f32;
+        }
+    }
+
+    /// A song in sections of eight bars: two of drums (kick on every beat,
+    /// snare on two and four, off-beat hats, a sixteenth-note fill at the end
+    /// of each eighth bar) and then a breakdown of pad chords that change a
+    /// little after the bar, with no drums. Breakdowns and fills are where a
+    /// beat tracker adds or drops a beat.
+    fn song_with_breakdowns(bpm: f64, seconds: f64, t0: f64, seed: u64) -> Vec<f32> {
+        let rate = ANALYSIS_RATE;
+        let mut out = vec![0.0f32; (seconds * rate as f64) as usize];
+        let mut rng = Lcg(seed + 5);
+        let p = 60.0 / bpm;
+        let bars = ((seconds - t0) / (4.0 * p)) as usize + 1;
+        let mut kicks = Vec::new();
+        for b in 0..bars {
+            let at = |beat: f64| t0 + (4 * b) as f64 * p + beat * p;
+            if (b / 8) % 3 == 2 {
+                let x = 0.3 + 0.2 * (rng.next() as f64 + 1.0);
+                tone(&mut out, at(x), 220.0 * (1.0 + 0.1 * (b % 3) as f64), 0.2, 3.0 * p, rate);
+                tone(&mut out, at(x + 1.37), 330.0, 0.1, 2.0 * p, rate);
+                continue;
+            }
+            kicks.extend((0..4).map(|k| at(k as f64)));
+            for k in [1.0, 3.0] {
+                burst(&mut out, at(k), 0.35, 18.0, 0.2, rate, &mut rng);
+            }
+            for k in 0..4 {
+                burst(&mut out, at(k as f64 + 0.5), 0.1, 70.0, 0.05, rate, &mut rng);
+            }
+            if b % 8 == 7 {
+                for k in 0..8 {
+                    burst(&mut out, at(2.0 + k as f64 * 0.25), 0.3, 25.0, 0.1, rate, &mut rng);
+                }
+            }
+        }
+        let drums_only = drums(&kicks, seconds, rate, false, 0.0, 0);
+        for (o, d) in out.iter_mut().zip(drums_only) {
+            *o += d + 0.005 * rng.next();
+        }
+        out
+    }
+
+    #[test]
+    fn tempo_is_exact_through_breakdowns_and_fills() {
+        // Counting the tracked beats one by one read some of these up to
+        // half a percent off, from a beat lost or added in a breakdown.
+        for (bpm, seed) in [(143.6, 0), (97.0, 4), (121.3, 3), (128.0, 5)] {
+            let (secs, t0) = (150.0, 0.31);
+            let g = analyze_music(&song_with_breakdowns(bpm, secs, t0, seed), ANALYSIS_RATE);
+            let err = (g.tempo - bpm) / bpm * 100.0;
+            let truth: Vec<f64> = (0..).map(|i| t0 + i as f64 * 60.0 / bpm).take_while(|t| *t < secs - 0.1).collect();
+            let hits = hit_rate(&truth, &g.beats, 0.035);
+            eprintln!("{bpm} BPM with breakdowns: tempo {:.3} ({err:+.3}%), {:.1}% of beats within 35 ms", g.tempo, hits * 100.0);
+            assert!(err.abs() < 0.3, "{bpm} BPM read as {}", g.tempo);
+            assert!(hits >= 0.85, "{bpm} BPM: {:.0}% of beats on the beat", hits * 100.0);
+        }
+    }
+
+    #[test]
+    fn beats_are_counted_past_extra_and_missing_ones() {
+        let p = 0.5;
+        let mut t: Vec<f64> = (0..40).map(|i| 0.2 + i as f64 * p).collect();
+        // One missing, one extra half way, three on the off-beat for a while.
+        t.remove(10);
+        t.insert(20, 0.2 + 20.5 * p);
+        for x in t.iter_mut().skip(30).take(3) {
+            *x += 0.5 * p;
+        }
+        let fitted = fit_period(&t, 0.49).unwrap();
+        assert!((fitted - p).abs() < 1e-3, "{fitted}");
+        assert!(fit_period(&t[..3], p).is_none());
+        // A breakdown of weak beats that wander is put back on the grid.
+        let beats: Vec<f64> = (0..12).map(|i| i as f64 * p + if (4..8).contains(&i) { 0.1 } else { 0.0 }).collect();
+        let s: Vec<f32> = (0..12).map(|i| if (4..8).contains(&i) { 0.1 } else { 1.0 }).collect();
+        let out = regularise_weak_runs(&beats, &s, &|x| x >= 0.3, p);
+        assert_eq!(out.len(), 12);
+        assert!(out.iter().enumerate().all(|(i, t)| (t - i as f64 * p).abs() < 1e-9), "{out:?}");
     }
 
 }

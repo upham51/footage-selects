@@ -85,7 +85,7 @@ fn check_song(path: &Path, bpm: f64, seconds: f64) -> BeatGrid {
         hits * 100.0,
         grid.confidence
     );
-    assert!(tempo_err < 1.5, "{} read as {} BPM", info.name, grid.tempo);
+    assert!(tempo_err < 0.3, "{} read as {} BPM", info.name, grid.tempo);
     assert!(hits >= 0.9, "{}: {:.0}% of beats within 35 ms", info.name, hits * 100.0);
     assert!(grid.confidence > 0.4, "{} confidence {}", info.name, grid.confidence);
 
@@ -145,6 +145,24 @@ fn beats_of_a_150_bpm_stereo_aac_with_hats() {
     let info = probe_music(&path).unwrap();
     assert_eq!((info.channels, info.sample_rate, info.codec.as_str()), (2, 48000, "aac"));
     check_song(&path, 150.0, 25.0);
+}
+
+#[test]
+fn beats_tempo_between_whole_frames_is_read_to_a_fraction_of_a_percent() {
+    // 143.6 BPM is 17.99 analysis frames a beat, 97 is 26.64 and 128 is 20.19.
+    // A tester's song at 143.6 read as 145.2, so these are held to 0.3%.
+    let aac: &[&str] = &["-c:a", "aac", "-b:a", "192k"];
+    let flac: &[&str] = &["-c:a", "flac"];
+    for (name, bpm, secs, codec) in [("beats_143_6.m4a", 143.6, 40.0, aac), ("beats_97.flac", 97.0, 40.0, flac), ("beats_128.m4a", 128.0, 30.0, aac)] {
+        let path = song(name, bpm, secs, true, 0.02, codec);
+        let grid = check_song(&path, bpm, secs);
+        // The grid keeps time: the last beat is still on the beat, so a reel
+        // cut to it does not drift off the music.
+        let p = 60.0 / bpm;
+        let last = *grid.beats.last().unwrap();
+        let off = (last / p - (last / p).round()) * p;
+        assert!(off.abs() < 0.02, "{name}: last beat {last:.3} is {:.0} ms off the beat", off * 1000.0);
+    }
 }
 
 #[test]

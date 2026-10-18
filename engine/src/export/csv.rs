@@ -25,7 +25,7 @@ pub const HEADER: &[&str] = &[
     "Exposure",
     "Stability",
     "Overall",
-    "Strength",
+    "How good",
     "Clip frame rate",
     "Timeline frame rate",
     "Stars",
