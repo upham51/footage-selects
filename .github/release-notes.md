@@ -1,3 +1,7 @@
+New in 0.2.6:
+
+1. The website moves. Headlines rise word by word, the footage frame opens like a shutter, the navy band floods in, and a gold playhead under the header shows where you are on the page. The app itself is unchanged.
+
 New in 0.2.5:
 
 1. A version for Macs with an Intel processor: the file ending in `mac-intel.dmg`. It needs macOS Big Sur (11) or later.

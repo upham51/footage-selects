@@ -1,7 +1,7 @@
 {
   "name": "footage-selects",
   "private": true,
-  "version": "0.2.5",
+  "version": "0.2.6",
   "description": "Desktop app that pulls selects from raw footage with classical image math",
   "scripts": {
     "tauri": "tauri"
