@@ -1,3 +1,7 @@
+New in 0.2.5:
+
+1. A version for Macs with an Intel processor: the file ending in `mac-intel.dmg`. It needs macOS Big Sur (11) or later.
+
 New in 0.2.4:
 
 1. The app updates itself. Open the Project tab and choose Check for updates, or turn on Check when the app opens. Download this version by hand once; every version after it installs from inside the app.
@@ -45,6 +49,7 @@ Projects saved by 0.1 need analyzing once more after opening.
 Download the file for your computer:
 
 1. Mac with Apple silicon (M1 or later): the file ending in `mac-apple-silicon.dmg`
-2. Windows (64-bit): the file ending in `windows-setup.exe`
+2. Mac with an Intel processor: the file ending in `mac-intel.dmg`
+3. Windows (64-bit): the file ending in `windows-setup.exe`
 
 The first time you open it, your computer will ask you to confirm, because the app is not signed with a paid developer certificate. The README explains each click: https://github.com/upham51/footage-selects#readme

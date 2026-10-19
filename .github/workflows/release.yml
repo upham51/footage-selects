@@ -55,6 +55,13 @@ jobs:
             platform: darwin-aarch64
             bundles: app,dmg
             asset_suffix: mac-apple-silicon.dmg
+          - name: macOS (Intel)
+            # GitHub's last Intel Mac machine, so the engine tests run on Intel too.
+            os: macos-15-intel
+            target: x86_64-apple-darwin
+            platform: darwin-x86_64
+            bundles: app,dmg
+            asset_suffix: mac-intel.dmg
           - name: Windows
             os: windows-latest
             target: x86_64-pc-windows-msvc
@@ -89,9 +96,11 @@ jobs:
         id: ffcache
         with:
           path: ffmpeg-out
-          key: ffmpeg-macos-arm64-${{ hashFiles('scripts/build-ffmpeg.sh') }}
+          key: ffmpeg-macos-${{ runner.arch == 'ARM64' && 'arm64' || 'x86_64' }}-${{ hashFiles('scripts/build-ffmpeg.sh') }}
       - if: runner.os == 'macOS' && steps.ffcache.outputs.cache-hit != 'true'
-        run: scripts/build-ffmpeg.sh macos ffmpeg-out
+        run: |
+          [ "$(uname -m)" = arm64 ] || command -v nasm >/dev/null || brew install nasm
+          scripts/build-ffmpeg.sh macos ffmpeg-out
 
       - name: Fetch the Windows ffmpeg built above
         if: runner.os == 'Windows'
@@ -180,7 +189,8 @@ jobs:
           if [ "${{ runner.os }}" = "macOS" ]; then
             src=$(ls $b/dmg/*.dmg | head -1)
             upd=$(ls $b/macos/*.app.tar.gz 2>/dev/null | head -1 || true)
-            upd_out="dist/$name-$version-mac-apple-silicon.app.tar.gz"
+            suffix="${{ matrix.asset_suffix }}"
+            upd_out="dist/$name-$version-${suffix%.dmg}.app.tar.gz"
           else
             src=$(ls $b/nsis/*-setup.exe | head -1)
             upd="$src"
