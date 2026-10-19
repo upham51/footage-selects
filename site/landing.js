@@ -1,6 +1,6 @@
 "use strict";
 // The landing page's moving parts: the hero reel of six clips with live scores,
-// the clip detail panel, and the reveal animations. Clips stream from Pexels;
+// and the clip detail panel. Entrances and scroll moves live in motion.js. Clips stream from Pexels;
 // every file name, camera and score is illustrative and comes from fs-signal.js.
 // The waitlist form is handled separately by site.js.
 
@@ -219,6 +219,8 @@
     updateHero();
   }
   function showClip(ci) {
+    // motion.js listens for this to refocus the viewfinder.
+    if (ci !== hero.hc) document.dispatchEvent(new CustomEvent("fs:clip", { detail: ci }));
     hero.vids.forEach((v, q) => {
       v.classList.toggle("on", q === ci);
       if (q !== ci && !v.paused) v.pause();
@@ -550,34 +552,10 @@
     });
   }
 
-  /* ---------- Reveals ---------- */
-
-  function reveals() {
-    if (reduce || !("IntersectionObserver" in window)) return;
-    const ease = "cubic-bezier(.16,1,.3,1)";
-    document.querySelectorAll("[data-word]").forEach((w, i) => w.animate([{ transform: "translateY(108%) rotate(3deg)" }, { transform: "none" }], { duration: 1100, delay: 120 + i * 55, easing: "cubic-bezier(.2,1.25,.32,1)", fill: "both" }));
-    const anims = new Map();
-    document.querySelectorAll("[data-reveal]").forEach((n) => {
-      const r = n.getBoundingClientRect();
-      if (r.bottom < 0) return; // Already scrolled past, as on a reload part way down.
-      const a = n.animate([{ opacity: 0, transform: "translateY(36px)" }, { opacity: 1, transform: "none" }], { duration: 1000, delay: +n.dataset.delay || 0, easing: ease, fill: "both" });
-      a.pause();
-      anims.set(n, a);
-    });
-    const io = new IntersectionObserver((es) => es.forEach((e) => {
-      if (!e.isIntersecting) return;
-      const a = anims.get(e.target);
-      if (a) a.play();
-      io.unobserve(e.target);
-    }), { threshold: 0.12 });
-    anims.forEach((_, n) => io.observe(n));
-  }
-
   /* ---------- Start ---------- */
 
   buildHero();
   buildInst();
-  reveals();
 
   const panel = $("instrument");
   if ("IntersectionObserver" in window) {

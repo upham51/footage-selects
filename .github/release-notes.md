@@ -1,3 +1,7 @@
+New in 0.2.5:
+
+1. The website moves. Headlines rise word by word, the footage frame opens like a shutter, the navy band floods in, and a gold playhead under the header shows where you are on the page. The app itself is unchanged.
+
 New in 0.2.4:
 
 1. The app updates itself. Open the Project tab and choose Check for updates, or turn on Check when the app opens. Download this version by hand once; every version after it installs from inside the app.
