@@ -1,6 +1,10 @@
-New in 0.2.5:
+New in 0.2.6:
 
 1. The website moves. Headlines rise word by word, the footage frame opens like a shutter, the navy band floods in, and a gold playhead under the header shows where you are on the page. The app itself is unchanged.
+
+New in 0.2.5:
+
+1. A version for Macs with an Intel processor: the file ending in `mac-intel.dmg`. It needs macOS Big Sur (11) or later.
 
 New in 0.2.4:
 
@@ -49,6 +53,7 @@ Projects saved by 0.1 need analyzing once more after opening.
 Download the file for your computer:
 
 1. Mac with Apple silicon (M1 or later): the file ending in `mac-apple-silicon.dmg`
-2. Windows (64-bit): the file ending in `windows-setup.exe`
+2. Mac with an Intel processor: the file ending in `mac-intel.dmg`
+3. Windows (64-bit): the file ending in `windows-setup.exe`
 
 The first time you open it, your computer will ask you to confirm, because the app is not signed with a paid developer certificate. The README explains each click: https://github.com/upham51/footage-selects#readme

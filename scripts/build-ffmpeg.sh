@@ -2,7 +2,8 @@
 # Build the ffmpeg and ffprobe that ship inside the app, from FFmpeg's own
 # source release, under the LGPL only.
 #
-#   scripts/build-ffmpeg.sh macos   OUTDIR   (run on an Apple silicon Mac)
+#   scripts/build-ffmpeg.sh macos   OUTDIR   (run on a Mac; builds for that Mac's chip,
+#                                             Apple silicon or Intel, which needs nasm)
 #   scripts/build-ffmpeg.sh windows OUTDIR   (run on Linux; cross-compiles with mingw-w64)
 #   scripts/build-ffmpeg.sh linux   OUTDIR   (for development and tests)
 #
@@ -48,8 +49,14 @@ COMMON=(
 EXE=""
 case "$PLATFORM" in
   macos)
-    EXTRA=(--enable-pthreads --enable-zlib --enable-videotoolbox --enable-audiotoolbox --enable-neon
-           --extra-cflags=-mmacosx-version-min=11.0 --extra-ldflags=-mmacosx-version-min=11.0)
+    EXTRA=(--enable-pthreads --enable-zlib --enable-videotoolbox --enable-audiotoolbox)
+    if [ "$(uname -m)" = arm64 ]; then
+      EXTRA+=(--enable-neon)
+    else
+      # Intel: FFmpeg's fast x86 code is assembled with nasm (brew install nasm).
+      command -v nasm >/dev/null || { echo "Install nasm first (brew install nasm)." >&2; exit 1; }
+    fi
+    EXTRA+=(--extra-cflags=-mmacosx-version-min=11.0 --extra-ldflags=-mmacosx-version-min=11.0)
     ;;
   linux)
     EXTRA=(--enable-pthreads --enable-zlib)
@@ -94,12 +101,12 @@ echo "License check passed: GPL, version 3 and non-free parts are all off."
 make -j"$JOBS" "ffmpeg$EXE" "ffprobe$EXE" > "$WORK/make.log" 2>&1 || { tail -60 "$WORK/make.log"; exit 1; }
 install -m 755 "ffmpeg$EXE" "ffprobe$EXE" "$OUT/"
 if [ "$PLATFORM" = macos ]; then
-  # Apple silicon refuses to run unsigned code; an ad-hoc signature is enough.
+  # Apple silicon refuses to run unsigned code; an ad-hoc signature is enough, and harmless on Intel.
   codesign --force --sign - "$OUT/ffmpeg" "$OUT/ffprobe"
 fi
 
 {
-  echo "FFmpeg $FFMPEG_VERSION, built for $PLATFORM under the GNU LGPL version 2.1 or later."
+  echo "FFmpeg $FFMPEG_VERSION, built for $PLATFORM$([ "$PLATFORM" = macos ] && echo " ($(uname -m))") under the GNU LGPL version 2.1 or later."
   echo "Source: https://ffmpeg.org/releases/ffmpeg-$FFMPEG_VERSION.tar.xz"
   echo "Source SHA-256: $FFMPEG_SHA256"
   if [ "$PLATFORM" = windows ]; then

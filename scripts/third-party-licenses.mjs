@@ -6,13 +6,13 @@
 //   node scripts/third-party-licenses.mjs --check   fail if the file is out of date
 //                                                   or a shipped library has a risky license
 //
-// Rust libraries are read from Cargo for the two shipping targets (macOS on
-// Apple silicon and 64-bit Windows), following only the libraries compiled
+// Rust libraries are read from Cargo for the shipping targets (macOS on
+// Apple silicon and Intel, and 64-bit Windows), following only the libraries compiled
 // into the app, not build tools or test helpers.
 import { execFileSync } from "node:child_process";
 import { readFileSync, writeFileSync, existsSync } from "node:fs";
 
-const TARGETS = ["aarch64-apple-darwin", "x86_64-pc-windows-msvc"];
+const TARGETS = ["aarch64-apple-darwin", "x86_64-apple-darwin", "x86_64-pc-windows-msvc"];
 const ROOT_PACKAGE = "footage-selects";
 
 // Licenses that never oblige the app to publish its own code.

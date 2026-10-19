@@ -6,7 +6,7 @@ It also listens to the sound, so selects start and end in a pause when someone t
 
 It understands log footage. S-Log3, V-Log, Canon Log 3, LogC3, F-Log, D-Log, D-Log M, Apple Log, N-Log and HLG are judged in stops through the camera's own curve, so a flat-looking log shot is not marked down, while clipped highlights and underexposure are caught. It can also learn from videos you have already finished: it finds which shots you used and tunes its settings toward your choices.
 
-It is free, it works on Mac (Apple silicon) and Windows, and it runs entirely on your computer. Nothing is uploaded, there is no account, and it works without an internet connection. It uses plain image math, not artificial intelligence.
+It is free, it works on Mac (Apple silicon and Intel) and Windows, and it runs entirely on your computer. Nothing is uploaded, there is no account, and it works without an internet connection. It uses plain image math, not artificial intelligence.
 
 On an Apple silicon Mac, 4K footage is analyzed at roughly 8 times real time, so two hours of 4K takes about 15 minutes. HD footage and proxies are usually quicker, and 120 fps footage slower, because the computer has to unpack every frame it uses to rebuild the next. ProRes, DNxHR and other all-intra footage is the exception: each frame stands alone, so only the frames that get scored are unpacked, which makes it several times faster than H.264 or HEVC of the same size. You then tune the result with sliders, which update instantly.
 
@@ -26,9 +26,10 @@ On an Apple silicon Mac, 4K footage is analyzed at roughly 8 times real time, so
 Go to the [latest release](https://github.com/upham51/footage-selects/releases/latest) and download the file for your computer. No GitHub account is needed.
 
 1. Mac with Apple silicon (M1, M2, M3, M4 or later): the file ending in `mac-apple-silicon.dmg`
-2. Windows: the file ending in `windows-setup.exe`
+2. Mac with an Intel processor: the file ending in `mac-intel.dmg`
+3. Windows: the file ending in `windows-setup.exe`
 
-Not sure which Mac you have? Open the Apple menu, choose About This Mac, and look at the line called Chip. If it starts with Apple, this download is for you.
+Not sure which Mac you have? Open the Apple menu and choose About This Mac. If there is a line called Chip that starts with Apple, take `mac-apple-silicon.dmg`. If there is a line called Processor that mentions Intel, take `mac-intel.dmg`. The Intel version needs macOS Big Sur (11) or later, and analysis is slower than on Apple silicon.
 
 ## Install on a Mac
 
