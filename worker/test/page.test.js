@@ -78,7 +78,7 @@ test("the demo video slot shows the video from config, escaped, and allows its h
   const v = pageValues({ ...config, demoVideo: { src: "https://media.example/demo.mp4", poster: "", caption: 'Two "minutes"' } }, "N");
   assert.match(v.demoHtml, /<video class="demo-video" controls preload="metadata" playsinline src="https:\/\/media\.example\/demo\.mp4">/);
   assert.match(v.demoHtml, /Two &quot;minutes&quot;/);
-  assert.match(v.csp, /media-src 'self' https:\/\/videos\.pexels\.com https:\/\/media\.example/);
+  assert.match(v.csp, /media-src 'self' https:\/\/media\.example/);
 });
 
 test("the page's own clips and photos come only from the hosts the policy allows", () => {

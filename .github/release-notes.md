@@ -1,3 +1,7 @@
+New in 0.2.7:
+
+1. The website shows real footage instead of stock clips.
+
 New in 0.2.6:
 
 1. The website moves. Headlines rise word by word, the footage frame opens like a shutter, the navy band floods in, and a gold playhead under the header shows where you are on the page. The app itself is unchanged.

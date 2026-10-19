@@ -4,7 +4,7 @@
   function bump(t, a, b, depth, soft) { soft = soft || 0.8; if (t < a - soft || t > b + soft) return 0; if (t >= a && t <= b) return depth; const d = t < a ? (a - t) / soft : (t - b) / soft; return depth * (0.5 + 0.5 * Math.cos(Math.PI * d)); }
   function smooth(arr, w) { const out = []; for (let i = 0; i < arr.length; i++) { let s = 0, c = 0; for (let j = i - w; j <= i + w; j++) if (j >= 0 && j < arr.length) { s += arr[j]; c++; } out.push(s / c); } return out; }
   function clip(o) {
-    o = o || {}; const dur = o.dur || 48, rate = o.rate || 5, n = dur * rate, r = prng(o.seed || 7);
+    o = o || {}; const dur = o.dur || 48, rate = o.rate || 5, n = Math.round(dur * rate), r = prng(o.seed || 7);
     const thr = o.thr || { focus: 50, exposure: 50, stability: 50 };
     const spec = o.spec || {
       focus: { base: 79, dips: [[14, 19, 47]] },
