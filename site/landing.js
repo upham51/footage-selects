@@ -1,7 +1,7 @@
 "use strict";
 // The landing page's moving parts: the hero reel of six clips with live scores,
-// and the clip detail panel. Entrances and scroll moves live in motion.js. Clips stream from Pexels;
-// every file name, camera and score is illustrative and comes from fs-signal.js.
+// and the clip detail panel. Entrances and scroll moves live in motion.js. Clips and posters are the
+// owner's own footage in site/media; file names, cameras and scores are illustrative and come from fs-signal.js.
 // The waitlist form is handled separately by site.js.
 
 (function () {
@@ -48,20 +48,22 @@
 
   const METRICS = [["focus", "Focus"], ["exposure", "Exposure"], ["stability", "Stability"]];
   const NAME = { focus: "Focus", exposure: "Exposure", stability: "Stability" };
-  const PX = (id, f) => "https://videos.pexels.com/video-files/" + id + "/" + id + "-hd_1280_720_" + f + "fps.mp4";
+  // The owner's own footage, served from site/media. Durations are the real lengths; the dips sit
+  // where each clip is soft (hero_4 walking into fog), shaken (hero_4 handheld) or dark (hero_5 at the fire).
+  // pos slides the crop toward the subject where the phone's 4:5 frame would cut it off.
   const CLIPS = [
-    { name: "C0042.MP4", what: "Ceremony, wide", cam: "Sony FX3", profile: "S-Log3", source: "Profile read from C0042M01.XML", vid: PX(8776110, 25), dur: 23, seed: 7, hist: [-0.4, 2.1, 3], mid: "Middle tones −0.4 stops · 0.3% clipped",
-      spec: { focus: { base: 80, dips: [[6, 8.5, 42]] }, exposure: { base: 73, dips: [] }, stability: { base: 86, dips: [[15, 16.2, 44]] } } },
-    { name: "A001_C014.MOV", what: "Stair reveal, gimbal", cam: "Canon C70", profile: "Canon Log 3", source: "Profile chosen under Picture profile", vid: PX(7578544, 30), dur: 12, seed: 19, hist: [0.3, 1.9, 2], mid: "Middle tones +0.3 stops · 0.2% clipped",
-      spec: { focus: { base: 82, dips: [] }, exposure: { base: 70, dips: [[0, 2.2, 36]] }, stability: { base: 88, dips: [] } } },
-    { name: "IMG_4410.MOV", what: "Street, handheld", cam: "iPhone 15 Pro", profile: "Apple Log", source: "Profile chosen under Picture profile", vid: PX(3796613, 25), dur: 17, seed: 23, hist: [1.2, 2.2, 9], mid: "Middle tones +1.2 stops · 2.6% clipped",
-      spec: { focus: { base: 76, dips: [[9, 10.5, 40]] }, exposure: { base: 68, dips: [] }, stability: { base: 62, dips: [[1, 5, 30], [12, 15, 28]] } } },
-    { name: "DJI_0117.MP4", what: "Festival crowd, aerial", cam: "DJI Mavic 3", profile: "D-Log M", source: "Profile read from DJI_0117.SRT", vid: PX(3941289, 30), dur: 24, seed: 11, hist: [-1.6, 2.4, 5], mid: "Middle tones −1.6 stops · 1.1% clipped",
-      spec: { focus: { base: 78, dips: [] }, exposure: { base: 60, dips: [[0, 5, 22], [17, 24, 20]] }, stability: { base: 88, dips: [] } } },
-    { name: "C0051.MP4", what: "Couple at night, follow", cam: "Sony FX3", profile: "S-Log3", source: "Profile read from C0051M01.XML", vid: PX(5418493, 50), dur: 40, seed: 31, hist: [-2.4, 2.0, 1], mid: "Middle tones −2.4 stops · 0.1% clipped",
-      spec: { focus: { base: 66, dips: [[22, 30, 26]] }, exposure: { base: 40, dips: [] }, stability: { base: 80, dips: [] } } },
-    { name: "DJI_0122.MP4", what: "River valley, aerial", cam: "DJI Mavic 3", profile: "D-Log M", source: "Profile read from DJI_0122.SRT", vid: PX(3235598, 24), dur: 33, seed: 37, hist: [0.2, 2.3, 4], mid: "Middle tones +0.2 stops · 0.5% clipped",
-      spec: { focus: { base: 84, dips: [[25, 27, 40]] }, exposure: { base: 76, dips: [] }, stability: { base: 86, dips: [[3, 6, 50]] } } },
+    { name: "C0931.MP4", what: "Beach at sunset, truck", cam: "Sony FX3", profile: "Standard (Rec. 709)", source: "Profile read from C0931M01.XML", vid: "media/hero_1.mp4", pos: "55% 50%", poster: "media/hero_1.jpg", dur: 14.5, seed: 7, hist: [-0.1, 2.3, 18], mid: "Middle tones −0.1 stops · 9.0% clipped",
+      spec: { focus: { base: 82, dips: [] }, exposure: { base: 72, dips: [] }, stability: { base: 84, dips: [] } } },
+    { name: "C0412.MP4", what: "Lofoten at dawn, sea eagles", cam: "Sony FX3", profile: "Standard (Rec. 709)", source: "Profile read from C0412M01.XML", vid: "media/hero_2.mp4", poster: "media/hero_2.jpg", dur: 16.6, seed: 19, hist: [1.5, 1.8, 6], mid: "Middle tones +1.5 stops · 1.7% clipped",
+      spec: { focus: { base: 84, dips: [] }, exposure: { base: 74, dips: [] }, stability: { base: 90, dips: [] } } },
+    { name: "DJI_0382.MP4", what: "Vesper Peak, orbit", cam: "DJI Mavic 3", profile: "Standard (Rec. 709)", source: "Profile read from DJI_0382.SRT", vid: "media/hero_3.mp4", poster: "media/hero_3.jpg", dur: 20, seed: 23, hist: [-0.1, 2.2, 1], mid: "Middle tones −0.1 stops · 0.1% clipped",
+      spec: { focus: { base: 88, dips: [] }, exposure: { base: 76, dips: [] }, stability: { base: 92, dips: [] } } },
+    { name: "GOPR2200.MP4", what: "Hiker into fog, handheld", cam: "GoPro HERO5", profile: "Standard (Rec. 709)", source: "Profile chosen under Picture profile", vid: "media/hero_4.mp4", poster: "media/hero_4.jpg", dur: 15.1, seed: 11, hist: [-0.1, 2.0, 12], mid: "Middle tones −0.1 stops · 5.1% clipped",
+      spec: { focus: { base: 72, dips: [[0.4, 3.4, 24], [3.6, 6.3, 38]] }, exposure: { base: 70, dips: [] }, stability: { base: 66, dips: [[4.8, 8.8, 32], [13.2, 15.1, 38]] } } },
+    { name: "C1187.MP4", what: "Campfire under the stars", cam: "Sony FX3", profile: "Standard (Rec. 709)", source: "Profile read from C1187M01.XML", vid: "media/hero_5.mp4", pos: "55% 50%", poster: "media/hero_5.jpg", dur: 24.5, seed: 31, hist: [-3.0, 2.0, 3], mid: "Middle tones −3.0 stops · 0.7% clipped",
+      spec: { focus: { base: 72, dips: [] }, exposure: { base: 55, dips: [[2.4, 6.2, 9], [12.4, 16.4, 9], [18.2, 23, 19]] }, stability: { base: 92, dips: [] } } },
+    { name: "MVI_2041.MP4", what: "Alpine lake, swimmer", cam: "Canon EOS R5", profile: "Standard (Rec. 709)", source: "Profile chosen under Picture profile", vid: "media/hero_6.mp4", pos: "60% 50%", poster: "media/hero_6.jpg", dur: 24, seed: 37, hist: [-0.6, 2.1, 6], mid: "Middle tones −0.6 stops · 1.9% clipped",
+      spec: { focus: { base: 84, dips: [] }, exposure: { base: 72, dips: [] }, stability: { base: 92, dips: [] } } },
   ];
   const TOTAL = CLIPS.reduce((a, c) => a + c.dur, 0);
   const pct = (f) => (f * 100).toFixed(3) + "%";
@@ -141,6 +143,8 @@
       v.setAttribute("playsinline", "");
       v.setAttribute("aria-hidden", "true");
       v.preload = q < 2 ? "auto" : "metadata";
+      v.poster = c.poster;
+      if (c.pos) v.style.objectPosition = c.pos;
       v.src = c.vid;
       v.addEventListener("ended", () => { if (q === hero.hc && !hero.hover) heroGo((q + 1) % CLIPS.length, 0); });
       hero.vids.push(v);
@@ -184,7 +188,7 @@
     const path = (pts) => pts.map((p, i) => (i ? "L" : "M") + p[0].toFixed(1) + " " + p[1].toFixed(1)).join("");
     L.forEach((pts, li) => $("hero-l" + li).setAttribute("d", path(pts)));
     const keptTotal = CLIPS.reduce((a, c, q) => a + keptSecs(base(q), c.dur), 0);
-    $("hero-kept").textContent = k + " selects · " + keptTotal.toFixed(1) + " s kept of " + TOTAL + " s";
+    $("hero-kept").textContent = k + " selects · " + keptTotal.toFixed(1) + " s kept of " + TOTAL.toFixed(1) + " s";
 
     const scrub = $("hero-scrub");
     scrub.addEventListener("pointerenter", () => { hero.hover = true; hero.vids[hero.hc].pause(); });

@@ -404,6 +404,9 @@ select.input { padding: 0 12px; }
   .lane-value { font-size: 18px; }
   .spec > div { grid-template-columns: 1fr; gap: 8px; }
   .who-img { aspect-ratio: 4 / 3; }
+  /* The 4:3 phone crop keeps the subject: the hiker stands low in the frame, and the resort crop sits just under the pergola roof so the pool stays in. */
+  .who-img img.crop-hiker { object-position: 50% 100%; }
+  .who-img img.crop-pool { object-position: 50% 68%; }
   .stat { border-right: 0; margin-right: 0; padding-right: 0; border-bottom: 1px solid var(--faint-rule); }
   .stat:last-child { border-bottom: 0; }
   .step, .step:first-child, .step:last-child { padding: 40px 0; border-left: 0; border-top: 1px solid rgba(232, 237, 244, .14); }
