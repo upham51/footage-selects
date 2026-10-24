@@ -417,3 +417,13 @@ select.input { padding: 0 12px; }
   html { scroll-behavior: auto; }
   *, *::before, *::after { transition-duration: 0s !important; animation-duration: 0s !important; }
 }
+
+/* Download note under the hero buttons, and links in the footer. */
+.get-note { margin: -8px 0 0; font-size: 13.5px; line-height: 1.5; color: var(--muted); }
+.get-note a, .footer-links a { color: var(--navy); text-decoration: underline; text-underline-offset: 3px; text-decoration-thickness: 1px; transition: color 150ms cubic-bezier(.2, .7, .4, 1); }
+.get-note a:hover, .footer-links a:hover { color: var(--navy-hover); }
+.footer-links { display: flex; flex-wrap: wrap; gap: 8px 18px; }
+.footer-links a { text-decoration: none; }
+.footer-links a:hover { text-decoration: underline; }
+/* The WebP wrapper must not change how the photo fills its frame. */
+.who-img picture { display: contents; }

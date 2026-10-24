@@ -1,3 +1,9 @@
+New in 0.2.8:
+
+1. The website has a Download free button that goes straight to the latest version, so you no longer need to join a waitlist to try the app. The waitlist is now only for the planned smart features.
+2. Links to the website show a picture and a short description when shared in messages and social posts.
+3. The website loads faster: its photos are smaller and its clips are kept by your browser between visits. The app itself is unchanged.
+
 New in 0.2.7:
 
 1. The website shows real footage instead of stock clips.

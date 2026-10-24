@@ -94,7 +94,7 @@
 
   function done() {
     form.hidden = true;
-    show("done", "You are on the list", "Thank you. You will get an email when there is something to try. Nothing else will be sent.");
+    show("done", "You are on the list", "Thank you. You will get an email when the smart features are ready to try. Nothing else will be sent.");
   }
 
   form.addEventListener("submit", async (e) => {

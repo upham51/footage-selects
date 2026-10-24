@@ -1,7 +1,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { pageValues, PRODUCT_NAME } from "../src/page.js";
+import { pageValues, PRODUCT_NAME, APP_VERSION } from "../src/page.js";
+import { existsSync } from "node:fs";
 
 const site = (f) => readFileSync(new URL(`../../site/${f}`, import.meta.url), "utf8");
 const config = JSON.parse(site("config.json"));
@@ -83,7 +84,8 @@ test("the demo video slot shows the video from config, escaped, and allows its h
 
 test("the page's own clips and photos come only from the hosts the policy allows", () => {
   const csp = pageValues(config, "N").csp;
-  const html = site("index.html") + site("landing.js");
+  // Links people click (href) are not loaded by the page, so the policy does not cover them.
+  const html = (site("index.html") + site("landing.js")).replace(/\shref="[^"]*"/g, "");
   for (const url of html.match(/https:\/\/[a-z0-9.-]+/g) || []) {
     const origin = new URL(url).origin;
     if (origin === "https://challenges.cloudflare.com") continue;
@@ -99,4 +101,51 @@ test("visitors without JavaScript see the result of their signup", async () => {
   assert.match(signupStatusHtml("nojs"), /needs JavaScript/);
   for (const s of ["invalid", "check", "nojs", "error"]) assert.match(signupStatusHtml(s), /status-failed[\s\S]*nothing was saved/);
   assert.equal(signupStatusHtml("<script>"), "");
+});
+
+test("shared links get a picture, a description and a full address", () => {
+  const html = site("index.html");
+  for (const tag of ['property="og:description"', 'property="og:image" content="media/og.jpg"', 'name="twitter:card" content="summary_large_image"']) {
+    assert.ok(html.includes(tag), `missing ${tag}`);
+  }
+  assert.ok(existsSync(new URL("../../site/media/og.jpg", import.meta.url)), "the share picture exists");
+  const v = pageValues({ ...config, pageUrl: "https://selects.example/" }, "N");
+  assert.equal(v.ogImage, "https://selects.example/media/og.jpg");
+  assert.equal(pageValues({ ...config, pageUrl: "" }, "N").ogImage, "");
+});
+
+test("search engines read the app's name, free price, platforms and version", () => {
+  assert.equal(APP_VERSION, JSON.parse(readFileSync(new URL("../../src-tauri/tauri.conf.json", import.meta.url), "utf8")).version);
+  const v = pageValues({ ...config, pageUrl: "https://selects.example/" }, "Some <b> Name", new Date(), "9.9.9");
+  const m = v.jsonLd.match(/^<script type="application\/ld\+json">([\s\S]*)<\/script>$/);
+  assert.ok(m, "one JSON-LD script");
+  assert.doesNotMatch(m[1], /</, "nothing in it can close the script tag");
+  const data = JSON.parse(m[1]);
+  assert.equal(data["@type"], "SoftwareApplication");
+  assert.equal(data.name, "Some <b> Name");
+  assert.equal(data.softwareVersion, "9.9.9");
+  assert.equal(data.offers.price, "0");
+  assert.equal(data.url, "https://selects.example/");
+  assert.match(data.downloadUrl, /\/releases\/latest$/);
+});
+
+test("the sitemap and robots.txt name the same address as the page", () => {
+  assert.ok(config.pageUrl, "site/config.json has pageUrl");
+  assert.match(site("sitemap.xml"), new RegExp(`<loc>${config.pageUrl.replace(/[.]/g, "\\.")}</loc>`), "update site/sitemap.xml when pageUrl changes");
+  assert.ok(site("robots.txt").includes(`Sitemap: ${new URL("sitemap.xml", config.pageUrl).href}`), "update the Sitemap line in site/robots.txt when pageUrl changes");
+});
+
+test("the download buttons go to the latest release", () => {
+  const html = site("index.html");
+  const downloads = html.match(/<a class="btn btn-primary[^"]*" href="([^"]+)">Download free<\/a>/g) || [];
+  assert.equal(downloads.length, 2, "one in the top bar and one in the hero");
+  for (const d of downloads) assert.match(d, /href="https:\/\/github\.com\/upham51\/footage-selects\/releases\/latest"/);
+});
+
+test("every photo has a smaller WebP copy beside it", () => {
+  const html = site("index.html");
+  for (const [, name] of html.matchAll(/src="media\/(who_[a-z]+)\.jpg"/g)) {
+    assert.ok(html.includes(`srcset="media/${name}.webp"`), `${name} has a WebP source`);
+    assert.ok(existsSync(new URL(`../../site/media/${name}.webp`, import.meta.url)), `${name}.webp exists`);
+  }
 });

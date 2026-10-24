@@ -7,6 +7,44 @@ import siteConfig from "../../site/config.json" with { type: "json" };
 import appConfig from "../../src-tauri/tauri.conf.json" with { type: "json" };
 
 export const PRODUCT_NAME = appConfig.productName;
+export const APP_VERSION = appConfig.version;
+
+const RELEASES_URL = "https://github.com/upham51/footage-selects/releases/latest";
+const DESCRIPTION = "Measures focus, exposure and camera shake through every clip and exports a timeline of the good stretches for DaVinci Resolve, Premiere Pro or Final Cut Pro. Free, offline, Mac and Windows.";
+
+/** A path on the site as a full address, or "" when the page address is not set. */
+function absolute(pageUrl, path) {
+  try {
+    return pageUrl ? new URL(path, pageUrl).href : "";
+  } catch {
+    return "";
+  }
+}
+
+/**
+ * What search engines read about the app: name, price, platforms and version.
+ * "<" is escaped so nothing in it can close the script tag.
+ */
+export function structuredData(productName, version, pageUrl) {
+  const data = {
+    "@context": "https://schema.org",
+    "@type": "SoftwareApplication",
+    name: productName,
+    description: DESCRIPTION,
+    applicationCategory: "MultimediaApplication",
+    applicationSubCategory: "Video editing",
+    operatingSystem: "macOS 11 or later, Windows (64-bit)",
+    softwareVersion: version,
+    downloadUrl: RELEASES_URL,
+    isAccessibleForFree: true,
+    offers: { "@type": "Offer", price: "0", priceCurrency: "USD" },
+  };
+  if (pageUrl) {
+    data.url = pageUrl;
+    data.image = absolute(pageUrl, "media/og.jpg");
+  }
+  return `<script type="application/ld+json">${JSON.stringify(data).replace(/</g, "\\u003c")}</script>`;
+}
 
 /** The public Turnstile site key from site/config.json, or "" when the check is not set up. */
 export const TURNSTILE_SITE_KEY = (siteConfig.turnstileSiteKey || "").trim();
@@ -22,7 +60,7 @@ function originOf(src) {
 }
 
 /** Everything the page needs, worked out from the config files. Pure, so it can be tested. */
-export function pageValues(config = siteConfig, productName = PRODUCT_NAME, now = new Date()) {
+export function pageValues(config = siteConfig, productName = PRODUCT_NAME, now = new Date(), version = APP_VERSION) {
   const p = config.plannedPrice;
   const price = `${p.currency}${p.min} to ${p.currency}${p.max} a ${p.period}`;
   const video = config.demoVideo || {};
@@ -63,6 +101,8 @@ export function pageValues(config = siteConfig, productName = PRODUCT_NAME, now 
     turnstileHtml: turnstile ? `<div class="cf-turnstile" data-sitekey="${esc(turnstile)}"></div>${NOSCRIPT_NOTICE}` : "",
     turnstileScript: turnstile ? `<script src="https://challenges.cloudflare.com/turnstile/v0/api.js" async defer></script>` : "",
     pageUrl: config.pageUrl || "",
+    ogImage: absolute(config.pageUrl, "media/og.jpg"),
+    jsonLd: structuredData(productName, version, config.pageUrl || ""),
     csp,
   };
 }
@@ -79,7 +119,7 @@ export function signupStatusHtml(status) {
   const box = (kind, title, body) =>
     `<div class="status status-${kind}" role="${kind === "failed" ? "alert" : "status"}">${kind === "done" ? TICK : TRIANGLE}<div><strong>${title}</strong><p>${body}</p></div></div>`;
   switch (status) {
-    case "ok": return box("done", "You are on the list", "Thank you. You will get an email when there is something to try. Nothing else will be sent.");
+    case "ok": return box("done", "You are on the list", "Thank you. You will get an email when the smart features are ready to try. Nothing else will be sent.");
     case "invalid": return box("failed", NOT_ADDED, "One of the answers was missing or not recognised, so nothing was saved. Check each question and try again.");
     case "check": return box("failed", NOT_ADDED, "The spam check did not pass, so nothing was saved. Wait for the check above the button to show Success, then send the form again.");
     case "nojs": return box("failed", NOT_ADDED, "The spam check needs JavaScript, and it looks turned off in your browser, so nothing was saved. Turn JavaScript on for this page, reload it and send the form again.");
@@ -118,8 +158,12 @@ export function fillPage(response, env, values = pageValues(), signupStatus = ""
     rewriter = rewriter.on("#form-status", { element: (el) => el.setInnerContent(statusHtml, { html: true }) });
     if (signupStatus === "ok") rewriter = rewriter.on("#signup-form", { element: (el) => el.setAttribute("hidden", "") });
   }
+  rewriter = rewriter.on("head", { element: (el) => el.append(values.jsonLd, { html: true }) });
   if (values.pageUrl) {
-    rewriter = rewriter.on("head", { element: (el) => el.append(`<link rel="canonical" href="${esc(values.pageUrl)}">`, { html: true }) });
+    rewriter = rewriter
+      .on("head", { element: (el) => el.append(`<link rel="canonical" href="${esc(values.pageUrl)}"><meta property="og:url" content="${esc(values.pageUrl)}">`, { html: true }) })
+      // Share previews need the picture's full address, not a path.
+      .on('meta[property="og:image"]', { element: (el) => el.setAttribute("content", values.ogImage) });
   }
   const out = rewriter.transform(response);
   const headers = new Headers(out.headers);

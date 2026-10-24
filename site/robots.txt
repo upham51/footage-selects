@@ -1,3 +1,5 @@
 User-agent: *
 Disallow: /admin
 Disallow: /api/
+
+Sitemap: https://footage-selects-waitlist.upham51.workers.dev/sitemap.xml
