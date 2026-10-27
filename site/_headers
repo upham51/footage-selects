@@ -10,3 +10,8 @@
 
 /fonts/*
   Cache-Control: public, max-age=31536000, immutable
+
+# Clips and photos are replaced rarely, so a week of caching is safe, and
+# returning visitors skip fetching about 30 MB of video again.
+/media/*
+  Cache-Control: public, max-age=604800, stale-while-revalidate=86400
